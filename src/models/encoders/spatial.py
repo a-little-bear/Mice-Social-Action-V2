@@ -9,6 +9,8 @@ class GraphConvolution(nn.Module):
     def forward(self, x, adj=None):
         support = self.linear(x)
         if adj is not None:
+            if adj.dtype != support.dtype:
+                adj = adj.to(dtype=support.dtype)
             output = torch.matmul(adj, support)
         else:
             output = support

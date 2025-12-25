@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 import os
 import json
+import inspect
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 from .losses import FocalLoss, MacroSoftF1Loss
@@ -15,9 +16,15 @@ class Trainer:
         self.config = config
         self.device = device
         
+        # Check for fused AdamW support
+        use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        extra_args = dict(fused=True) if use_fused else dict()
+
         self.optimizer = torch.optim.AdamW(
             model.parameters(), 
-            lr=config['training']['learning_rate']
+            lr=config['training']['learning_rate'],
+            weight_decay=config['training'].get('weight_decay', 0.01),
+            **extra_args
         )
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, 
@@ -35,55 +42,61 @@ class Trainer:
             self.criterion = nn.BCEWithLogitsLoss(reduction='none')
         
         self.best_f1 = 0.0
-        self.results = []
-
-    def train_epoch(self, epoch):
-        self.model.train()
-        total_loss = 0
+        self.optimizer.zero_grad(set_to_none=True)
         
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         for batch in pbar:
             features, labels, lab_ids, subject_ids = batch
             
-            features = features.to(self.device)
-            labels = labels.to(self.device)
+            features = features.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
             if isinstance(lab_ids, torch.Tensor):
-                lab_ids = lab_ids.to(self.device)
+                lab_ids = lab_ids.to(self.device, non_blocking=True)
             if isinstance(subject_ids, torch.Tensor):
-                subject_ids = subject_ids.to(self.device)
+                subject_ids = subject_ids.to(self.device, non_blocking=True)
             
-            self.optimizer.zero_grad()
-            
-            outputs = self.model(features, lab_ids, subject_ids)
-            
-            if isinstance(outputs, tuple):
-                logits, detection_logits = outputs
-                detection_targets = (labels.sum(dim=-1) > 0).float().unsqueeze(-1)
-                det_loss = nn.BCEWithLogitsLoss()(detection_logits, detection_targets)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                outputs = self.model(features, lab_ids, subject_ids)
                 
-                if self.config['training']['loss_type'] == 'softmax':
-                    targets = torch.argmax(labels, dim=-1)
-                    cls_loss = self.criterion(logits.transpose(1, 2), targets)
+                if isinstance(outputs, tuple):
+                    logits, detection_logits = outputs
+                    detection_targets = (labels.sum(dim=-1) > 0).float().unsqueeze(-1)
+                    det_loss = nn.BCEWithLogitsLoss()(detection_logits, detection_targets)
+                    
+                    if self.config['training']['loss_type'] == 'softmax':
+                        targets = torch.argmax(labels, dim=-1)
+                        cls_loss = self.criterion(logits.transpose(1, 2), targets)
+                    else:
+                        cls_loss = self.criterion(logits, labels)
+                    
+                    loss = cls_loss.mean() + 0.5 * det_loss
                 else:
-                    cls_loss = self.criterion(logits, labels)
+                    logits = outputs
+                    if self.config['training']['loss_type'] == 'softmax':
+                        targets = torch.argmax(labels, dim=-1)
+                        loss = self.criterion(logits.transpose(1, 2), targets)
+                    elif self.config['training']['loss_type'] == 'soft_f1':
+                        loss = self.criterion(logits, labels)
+                    else:
+                        loss = self.criterion(logits, labels)
                 
-                loss = cls_loss.mean() + 0.5 * det_loss
-            else:
-                logits = outputs
-                if self.config['training']['loss_type'] == 'softmax':
-                    targets = torch.argmax(labels, dim=-1)
-                    loss = self.criterion(logits.transpose(1, 2), targets)
-                elif self.config['training']['loss_type'] == 'soft_f1':
-                    loss = self.criterion(logits, labels)
-                else:
-                    loss = self.criterion(logits, labels)
+                if self.config['training']['mask_unlabeled'] and self.config['training']['loss_type'] not in ['soft_f1']:
+                    mask = ~torch.isnan(labels).any(dim=-1) if labels.ndim == 3 else ~torch.isnan(labels)
+                    if loss.ndim > 0:
+                        if mask.ndim < loss.ndim:
+                            mask = mask.unsqueeze(-1)
+                        loss = loss * mask.float()
+                        loss = loss.sum() / (mask.sum() * loss.shape[-1] + 1e-6)
+                elif loss.ndim > 0:
+                    loss = loss.mean()
+                
+            loss.backward()
             
-            if self.config['training']['mask_unlabeled'] and self.config['training']['loss_type'] not in ['soft_f1']:
-                mask = ~torch.isnan(labels).any(dim=-1) if labels.ndim == 3 else ~torch.isnan(labels)
-                if loss.ndim > 0:
-                    if mask.ndim < loss.ndim:
-                        mask = mask.unsqueeze(-1)
-                    loss = loss * mask.float()
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True* mask.float()
                     loss = loss.sum() / (mask.sum() * loss.shape[-1] + 1e-6)
             elif loss.ndim > 0:
                 loss = loss.mean()

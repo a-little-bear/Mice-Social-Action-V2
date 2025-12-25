@@ -1,5 +1,26 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        return self._norm(x.float()).type_as(x) * self.weight
+
+class FastAttention(nn.Module):
+    def __init__(self, dropout=0.0):
+        super().__init__()
+        self.dropout = dropout
+
+    def forward(self, q, k, v, is_causal=False):
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal=is_causal)
 
 class MultiScaleCNN(nn.Module):
     """
@@ -30,9 +51,17 @@ class SqueezeFormerBlock(nn.Module):
     """
     def __init__(self, dim, num_heads):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(dim)
+        self.norm1 = RMSNorm(dim)
+        
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.fast_attn = FastAttention()
+        
+        self.norm2 = RMSNorm(dim)
         self.conv = nn.Sequential(
             nn.Conv1d(dim, dim, 3, padding=1, groups=dim), # Depthwise
             nn.GELU(),
@@ -41,10 +70,21 @@ class SqueezeFormerBlock(nn.Module):
     
     def forward(self, x):
         # x: [B, T, C]
+        B, T, C = x.shape
+        
         # Attention
         res = x
         x = self.norm1(x)
-        x, _ = self.attn(x, x, x)
+        
+        q = self.q_proj(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        x = self.fast_attn(q, k, v)
+        
+        x = x.transpose(1, 2).contiguous().view(B, T, C)
+        x = self.out_proj(x)
+        
         x = x + res
         
         # Conv
