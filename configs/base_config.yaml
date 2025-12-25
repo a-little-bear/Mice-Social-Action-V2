@@ -35,6 +35,7 @@ data:
     use_acceleration: true
     use_jerk: true # Enabled. Fast on GPU.
     use_angles: true
+    use_relative_angles: true
     use_window_stats: false
     window_sizes: [5, 15, 30]
 
@@ -79,8 +80,9 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
-  loss_type: "bce" # Options: "focal" (Class Imbalance), "ce" (Cross Entropy), "bce"
+  loss_type: "focal" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
   pos_weight: 10.0 # Weight for positive class in BCE
+  ohem_percent: 0.7 # For OHEM loss
   mask_unlabeled: true
   save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
   torch_compile: false # Disable to save memory during startup and avoid compilation overhead
@@ -90,7 +92,8 @@ cross_validation:
   n_folds: 5
 
 post_processing:
-  optimize_thresholds: false
+  optimize_thresholds: true
+  tie_breaking: "z_score" # Options: "none", "z_score", "argmax"
   smoothing:
     method: "median_filter" # Options: "median_filter", "ema", "none"
     window_size: 7
@@ -98,6 +101,5 @@ post_processing:
   gap_filling:
     max_gap: 10
     min_duration: 5
-  tie_breaking: "none" # Options: "z_score", "none"
 
 

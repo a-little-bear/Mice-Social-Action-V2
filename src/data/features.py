@@ -9,6 +9,7 @@ class FeatureGenerator:
         self.use_distances = config.get('use_distances', True)
         self.use_jerk = config.get('use_jerk', False)
         self.use_angles = config.get('use_angles', False)
+        self.use_relative_angles = config.get('use_relative_angles', False)
         self.use_window_stats = config.get('use_window_stats', False)
         self.window_sizes = config.get('window_sizes', [5, 15, 30])
 
@@ -59,6 +60,55 @@ class FeatureGenerator:
         angles = torch.atan2(vec[..., 1], vec[..., 0])
         
         return angles.unsqueeze(-1)
+
+    def compute_relative_angles(self, keypoints):
+        # keypoints: [..., M, K, C]
+        # Assumes M=2 for social interactions usually, but can generalize
+        # We want:
+        # 1. Angle difference between mice orientations
+        # 2. Angle of relative position vector (centroid to centroid) w.r.t ego orientation
+        
+        # Orientation vectors
+        nose = keypoints[..., 0, :]
+        tail = keypoints[..., 3, :]
+        orient_vec = nose - tail # [..., M, 2]
+        orient_angle = torch.atan2(orient_vec[..., 1], orient_vec[..., 0]) # [..., M]
+        
+        # Centroids (mean of all keypoints)
+        centroids = torch.mean(keypoints, dim=-2) # [..., M, 2]
+        
+        # Relative features
+        # We compute for each pair (i, j)
+        # For M=2, we have (0,1) and (1,0)
+        
+        if keypoints.dim() == 5:
+            B, T, M, K, C = keypoints.shape
+            batch_dims = (B, T)
+        else:
+            T, M, K, C = keypoints.shape
+            batch_dims = (T,)
+            
+        rel_angles_list = []
+        
+        for i in range(M):
+            for j in range(M):
+                if i == j: continue
+                
+                # 1. Relative Orientation: Angle(j) - Angle(i)
+                diff_angle = orient_angle[..., j] - orient_angle[..., i]
+                # Normalize to [-pi, pi]
+                diff_angle = torch.atan2(torch.sin(diff_angle), torch.cos(diff_angle))
+                
+                # 2. Relative Position Angle: Angle(Pos_j - Pos_i) - Angle(i)
+                pos_vec = centroids[..., j, :] - centroids[..., i, :]
+                pos_angle = torch.atan2(pos_vec[..., 1], pos_vec[..., 0])
+                rel_pos_angle = pos_angle - orient_angle[..., i]
+                rel_pos_angle = torch.atan2(torch.sin(rel_pos_angle), torch.cos(rel_pos_angle))
+                
+                rel_angles_list.append(diff_angle.unsqueeze(-1))
+                rel_angles_list.append(rel_pos_angle.unsqueeze(-1))
+                
+        return torch.cat(rel_angles_list, dim=-1)
 
     def compute_window_stats(self, features):
         # features: [B, T, D] or [T, D]
@@ -111,6 +161,10 @@ class FeatureGenerator:
             dim += num_mice * num_keypoints * 2
         if self.use_angles:
             dim += num_mice
+        if self.use_relative_angles:
+            # For each pair (i, j) where i != j, we add 2 angles
+            # Total pairs = M * (M - 1)
+            dim += num_mice * (num_mice - 1) * 2
             
         if self.use_window_stats:
             base_dim = dim
@@ -147,6 +201,9 @@ class FeatureGenerator:
             
         if self.use_angles:
             feature_list.append(self.compute_angles(keypoints).view(*orig_shape_flat))
+            
+        if self.use_relative_angles:
+            feature_list.append(self.compute_relative_angles(keypoints).view(*orig_shape_flat))
             
         combined_features = torch.cat(feature_list, dim=-1)
         

@@ -35,3 +35,22 @@ class MacroSoftF1Loss(nn.Module):
         
         f1 = (2 * tp) / (2 * tp + fp + fn + self.epsilon)
         return 1 - f1.mean()
+
+class OHEMLoss(nn.Module):
+    def __init__(self, rate=0.7, base_loss=None):
+        super(OHEMLoss, self).__init__()
+        self.rate = rate
+        self.base_loss = base_loss if base_loss is not None else nn.BCEWithLogitsLoss(reduction='none')
+
+    def forward(self, logits, targets):
+        loss = self.base_loss(logits, targets)
+        
+        num_examples = loss.numel()
+        num_hard = int(self.rate * num_examples)
+        
+        if num_hard == 0:
+            return loss.mean()
+            
+        loss_flat = loss.view(-1)
+        loss_sorted, _ = torch.topk(loss_flat, num_hard)
+        return loss_sorted.mean()

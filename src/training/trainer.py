@@ -7,7 +7,8 @@ import inspect
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 from collections import defaultdict
-from .losses import FocalLoss, MacroSoftF1Loss
+from .losses import FocalLoss, MacroSoftF1Loss, OHEMLoss
+from ..postprocessing.optimization import PostProcessor
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, config, device='cuda', feature_generator=None):
@@ -17,6 +18,8 @@ class Trainer:
         self.config = config
         self.device = device
         self.feature_generator = feature_generator
+        self.post_processor = PostProcessor(config['post_processing'])
+        
         if self.feature_generator:
             # No need to move to device yet, will be done in train_epoch if needed
             # but actually FeatureGenerator is just a collection of torch ops
@@ -44,12 +47,13 @@ class Trainer:
             self.criterion = FocalLoss(reduction='none')
         elif loss_type == 'soft_f1':
             self.criterion = MacroSoftF1Loss(num_classes=37)
+        elif loss_type == 'macro_soft_f1':
+            self.criterion = MacroSoftF1Loss(num_classes=37)
+        elif loss_type == 'ohem':
+            rate = config['training'].get('ohem_percent', 0.7)
+            self.criterion = OHEMLoss(rate=rate)
         elif loss_type == 'bce':
             pos_weight_val = float(config['training'].get('pos_weight', 1.0))
-            # Create a tensor for pos_weight to broadcast correctly
-            # We don't know num_classes here easily without passing it, but BCE handles scalar broadcasting usually?
-            # Actually BCEWithLogitsLoss pos_weight must be a vector of length num_classes or broadcastable.
-            # If we pass a scalar tensor, it broadcasts.
             pos_weight = torch.tensor(pos_weight_val, device=device)
             self.criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight)
         else:
@@ -166,11 +170,16 @@ class Trainer:
             
         return total_loss / len(self.train_loader)
 
-    def validate(self, epoch, post_processor=None):
+    def validate(self, epoch):
         self.model.eval()
-        
-        # Incremental stats storage: lab_id -> {class_idx: {'tp': 0, 'fp': 0, 'fn': 0}}
         lab_stats = defaultdict(lambda: defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0}))
+        
+        all_probs = []
+        all_targets = []
+        all_lab_ids = []
+        
+        collect_all = self.config['post_processing'].get('optimize_thresholds', False) or \
+                      self.config['post_processing'].get('tie_breaking', 'none') != 'none'
         
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
@@ -213,70 +222,136 @@ class Trainer:
                     
                 probs = torch.sigmoid(logits)
                 
-                # Binarize (Simple thresholding for validation monitoring to save memory)
-                # Note: Post-processing (smoothing) is skipped here because validation batches 
-                # are shuffled windows, so temporal smoothing across windows is invalid.
-                preds_bin = (probs > 0.5).float()
-                
-                # Move to CPU for stats accumulation
-                preds_np = preds_bin.cpu().numpy()
-                targets_np = labels.cpu().numpy()
-                
-                # Handle lab_ids being a tuple or list from DataLoader
-                if isinstance(lab_ids, torch.Tensor):
-                    lab_ids_np = lab_ids.cpu().numpy()
+                if collect_all:
+                    # Move to CPU and collect
+                    all_probs.append(probs.cpu())
+                    all_targets.append(labels.cpu())
+                    
+                    if isinstance(lab_ids, torch.Tensor):
+                        all_lab_ids.append(lab_ids.cpu())
+                    else:
+                        # Repeat lab_id for each item in batch if it's a list of strings
+                        # Actually lab_ids is a tuple of size B
+                        all_lab_ids.extend(lab_ids)
                 else:
-                    lab_ids_np = np.array(lab_ids)
+                    # Incremental stats (Fast, Low Memory)
+                    preds_bin = (probs > 0.5).float()
+                    preds_np = preds_bin.cpu().numpy()
+                    targets_np = labels.cpu().numpy()
+                    
+                    if isinstance(lab_ids, torch.Tensor):
+                        lab_ids_np = lab_ids.cpu().numpy()
+                    else:
+                        lab_ids_np = np.array(lab_ids)
 
-                # Update stats incrementally
-                B, T, C = preds_np.shape
+                    B, T, C = preds_np.shape
+                    for i in range(B):
+                        lab = lab_ids_np[i]
+                        valid_mask = ~np.isnan(targets_np[i]).any(axis=-1)
+                        if not np.any(valid_mask): continue
+                        
+                        p = preds_np[i][valid_mask]
+                        t = targets_np[i][valid_mask]
+                        
+                        for c in range(C):
+                            tp = np.sum((p[:, c] == 1) & (t[:, c] == 1))
+                            fp = np.sum((p[:, c] == 1) & (t[:, c] == 0))
+                            fn = np.sum((p[:, c] == 0) & (t[:, c] == 1))
+                            
+                            lab_stats[lab][c]['tp'] += tp
+                            lab_stats[lab][c]['fp'] += fp
+                            lab_stats[lab][c]['fn'] += fn
+
+        if collect_all:
+            # Concatenate
+            full_probs = torch.cat(all_probs, dim=0).numpy() # [N, T, C]
+            full_targets = torch.cat(all_targets, dim=0).numpy() # [N, T, C]
+            
+            # Apply Smoothing per window (valid even if shuffled)
+            if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
+                N_batches, T_seq, C_cls = full_probs.shape
+                for i in range(N_batches):
+                    full_probs[i] = self.post_processor.apply_smoothing(full_probs[i])
+            
+            # Flatten for processing: [N*T, C]
+            N, T, C = full_probs.shape
+            flat_probs = full_probs.reshape(-1, C)
+            flat_targets = full_targets.reshape(-1, C)
+            
+            # Handle lab_ids
+            if len(all_lab_ids) > 0 and isinstance(all_lab_ids[0], torch.Tensor):
+                full_lab_ids = torch.cat(all_lab_ids, dim=0).numpy()
+            else:
+                full_lab_ids = np.array(all_lab_ids)
+            
+            # Expand lab_ids to match flattened shape
+            # full_lab_ids is [N], we need [N*T]
+            flat_lab_ids = np.repeat(full_lab_ids, T)
+            
+            # Mask invalid frames
+            valid_mask = ~np.isnan(flat_targets).any(axis=-1)
+            
+            flat_probs = flat_probs[valid_mask]
+            flat_targets = flat_targets[valid_mask]
+            flat_lab_ids = flat_lab_ids[valid_mask]
+            
+            # 1. Optimize Thresholds
+            if self.config['post_processing'].get('optimize_thresholds', False):
+                self.post_processor.optimize_thresholds(flat_probs, flat_targets, flat_lab_ids)
+            
+            # 2. Apply Tie Breaking (and implicit thresholding)
+            final_preds = self.post_processor.apply_tie_breaking(flat_probs, flat_lab_ids)
+            
+            # If tie breaking is 'none', we still need to apply thresholds if they exist
+            if self.config['post_processing'].get('tie_breaking', 'none') == 'none':
+                final_preds = np.zeros_like(flat_probs)
+                unique_labs = np.unique(flat_lab_ids)
+                for lab in unique_labs:
+                    lab_mask = (flat_lab_ids == lab)
+                    if lab in self.post_processor.thresholds:
+                        thresh = self.post_processor.thresholds[lab]
+                        final_preds[lab_mask] = (flat_probs[lab_mask] > thresh).astype(float)
+                    else:
+                        final_preds[lab_mask] = (flat_probs[lab_mask] > 0.5).astype(float)
+
+            # 3. Compute F1
+            # Re-aggregate by lab
+            unique_labs = np.unique(flat_lab_ids)
+            lab_scores = []
+            
+            for lab in unique_labs:
+                lab_mask = (flat_lab_ids == lab)
+                lab_p = final_preds[lab_mask]
+                lab_t = flat_targets[lab_mask]
                 
-                for i in range(B):
-                    lab = lab_ids_np[i]
-                    
-                    # Mask valid frames (not NaN in targets)
-                    # targets_np[i]: [T, C]
-                    valid_mask = ~np.isnan(targets_np[i]).any(axis=-1) # [T]
-                    
-                    if not np.any(valid_mask):
-                        continue
-                        
-                    p = preds_np[i][valid_mask] # [T_valid, C]
-                    t = targets_np[i][valid_mask] # [T_valid, C]
-                    
-                    for c in range(C):
-                        tp = np.sum((p[:, c] == 1) & (t[:, c] == 1))
-                        fp = np.sum((p[:, c] == 1) & (t[:, c] == 0))
-                        fn = np.sum((p[:, c] == 0) & (t[:, c] == 1))
-                        
-                        lab_stats[lab][c]['tp'] += tp
-                        lab_stats[lab][c]['fp'] += fp
-                        lab_stats[lab][c]['fn'] += fn
+                action_f1s = []
+                for c in range(C):
+                    f1 = f1_score(lab_t[:, c], lab_p[:, c])
+                    action_f1s.append(f1)
+                lab_scores.append(np.mean(action_f1s))
+                
+            final_f1 = np.mean(lab_scores) if lab_scores else 0.0
+            
+            return final_f1, None, None
 
-        # Compute F1 from accumulated stats
+        # Compute F1 from accumulated stats (Incremental Mode)
         lab_scores = []
-        
         for lab, class_stats in lab_stats.items():
             action_f1s = []
-            # Assuming num_classes is consistent
-            # We iterate over keys in class_stats which are class indices
             for c, stats in class_stats.items():
                 tp = stats['tp']
                 fp = stats['fp']
                 fn = stats['fn']
-                
                 if (2 * tp + fp + fn) == 0:
                     f1 = 0.0
                 else:
                     f1 = (2 * tp) / (2 * tp + fp + fn)
                 action_f1s.append(f1)
-            
             if action_f1s:
                 lab_scores.append(np.mean(action_f1s))
         
         final_f1 = np.mean(lab_scores) if lab_scores else 0.0
         
-        # Return None for preds/targets to save memory
         return final_f1, None, None
 
     def save_results(self, epoch, f1):

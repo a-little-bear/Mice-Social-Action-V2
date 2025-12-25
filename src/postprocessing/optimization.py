@@ -9,6 +9,7 @@ class PostProcessor:
     def __init__(self, config):
         self.config = config
         self.thresholds = {} # Dictionary to store lab-specific thresholds
+        self.sigmas = {} # Dictionary to store lab-specific prediction std devs (for Z-score)
 
     def optimize_thresholds(self, predictions, targets, lab_ids):
         """
@@ -17,7 +18,7 @@ class PostProcessor:
         targets: [N, C] binary labels
         lab_ids: [N]
         """
-        if not self.config['optimize_thresholds']:
+        if not self.config.get('optimize_thresholds', False):
             return
             
         print("Optimizing thresholds...")
@@ -33,8 +34,12 @@ class PostProcessor:
             lab_targets = targets[lab_mask]
             
             best_thresh_per_class = []
+            sigmas_per_class = []
             
             for c in range(num_classes):
+                # Calculate sigma for Z-score
+                sigmas_per_class.append(np.std(lab_preds[:, c]))
+
                 best_f1 = -1
                 best_th = 0.5
                 
@@ -53,8 +58,72 @@ class PostProcessor:
                 
                 best_thresh_per_class.append(best_th)
             
-            self.thresholds[lab] = best_thresh_per_class
+            self.thresholds[lab] = np.array(best_thresh_per_class)
+            self.sigmas[lab] = np.array(sigmas_per_class)
             print(f"Lab {lab} thresholds: {best_thresh_per_class}")
+
+    def apply_tie_breaking(self, predictions, lab_ids):
+        """
+        Apply tie-breaking logic when multiple classes are above threshold.
+        predictions: [N, C] probabilities
+        lab_ids: [N]
+        """
+        method = self.config.get('tie_breaking', 'none')
+        if method == 'none':
+            return predictions
+            
+        final_preds = np.zeros_like(predictions)
+        unique_labs = np.unique(lab_ids)
+        
+        for lab in unique_labs:
+            if lab not in self.thresholds:
+                continue
+                
+            lab_mask = (lab_ids == lab)
+            lab_probs = predictions[lab_mask]
+            thresholds = self.thresholds[lab]
+            
+            # Binary mask of classes above threshold
+            above_thresh = lab_probs > thresholds
+            
+            if method == 'argmax':
+                # Just take the max prob among those above threshold
+                # If none above threshold, all 0
+                # If multiple, max prob wins
+                # We can implement this by zeroing out below threshold and taking argmax
+                masked_probs = lab_probs * above_thresh
+                max_indices = np.argmax(masked_probs, axis=1)
+                # Check if row has any valid prediction
+                has_pred = above_thresh.any(axis=1)
+                
+                # Create one-hot
+                lab_final = np.zeros_like(lab_probs)
+                lab_final[np.arange(len(lab_probs)), max_indices] = 1
+                lab_final[~has_pred] = 0
+                
+                final_preds[lab_mask] = lab_final
+                
+            elif method == 'z_score':
+                sigmas = self.sigmas.get(lab, np.ones_like(thresholds))
+                # Avoid div by zero
+                sigmas = np.maximum(sigmas, 1e-6)
+                
+                z_scores = (lab_probs - thresholds) / sigmas
+                
+                # Only consider those above threshold (z_score > 0)
+                masked_z = z_scores * above_thresh
+                masked_z[~above_thresh] = -np.inf
+                
+                max_indices = np.argmax(masked_z, axis=1)
+                has_pred = above_thresh.any(axis=1)
+                
+                lab_final = np.zeros_like(lab_probs)
+                lab_final[np.arange(len(lab_probs)), max_indices] = 1
+                lab_final[~has_pred] = 0
+                
+                final_preds[lab_mask] = lab_final
+                
+        return final_preds
 
     def apply_smoothing(self, predictions):
         """
