@@ -8,14 +8,14 @@ test: false
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
   data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
-  batch_size: 1024
-  num_workers: 4 # Further reduced to 4 to ensure stability
+  batch_size: 1024 # Increased back to 1024. 96GB VRAM can easily handle this now.
+  num_workers: 8 # Increased to 8 to keep GPU fed.
   window_size: 512
-  preload: false # MUST be false. 105GB dataset + 110GB RAM is too tight for preload.
+  preload: false # Keep false. 105GB raw data + 110GB RAM is too risky.
   pin_memory: true
-  prefetch_factor: 2
-  persistent_workers: true
-  cache_size: 4 # Each worker caches only 4 videos.
+  prefetch_factor: 2 # Increased to 2.
+  persistent_workers: true # Set to true for faster epoch transitions.
+  cache_size: 16 # Increased cache per worker.
   
   sampling:
     strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
@@ -33,7 +33,7 @@ data:
     use_distances: true
     use_velocity: true
     use_acceleration: true
-    use_jerk: true
+    use_jerk: true # Enabled. Fast on GPU.
     use_angles: true
     use_window_stats: true
     window_sizes: [5, 15, 30]

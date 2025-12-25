@@ -13,40 +13,47 @@ class FeatureGenerator:
         self.window_sizes = config.get('window_sizes', [5, 15, 30])
 
     def compute_distances(self, keypoints):
-        if keypoints.dim() == 4:
-            T, M, K, C = keypoints.shape
-            flat_kps = keypoints.view(T, M*K, C)
+        # keypoints: [T, M, K, C] or [B, T, M, K, C]
+        if keypoints.dim() == 5:
+            B, T, M, K, C = keypoints.shape
+            flat_kps = keypoints.view(B, T, M*K, C)
+            diff = flat_kps.unsqueeze(3) - flat_kps.unsqueeze(2)
+            dist_matrix = torch.norm(diff, dim=-1)
+            num_points = dist_matrix.shape[2]
+            triu_indices = torch.triu_indices(num_points, num_points, offset=1).to(keypoints.device)
+            distances = dist_matrix[:, :, triu_indices[0], triu_indices[1]]
         else:
-            flat_kps = keypoints
-
-        diff = flat_kps.unsqueeze(2) - flat_kps.unsqueeze(1)
-        dist_matrix = torch.norm(diff, dim=-1)
-        
-        num_points = dist_matrix.shape[1]
-        triu_indices = torch.triu_indices(num_points, num_points, offset=1)
-        distances = dist_matrix[:, triu_indices[0], triu_indices[1]]
+            if keypoints.dim() == 4:
+                T, M, K, C = keypoints.shape
+                flat_kps = keypoints.view(T, M*K, C)
+            else:
+                flat_kps = keypoints
+            diff = flat_kps.unsqueeze(2) - flat_kps.unsqueeze(1)
+            dist_matrix = torch.norm(diff, dim=-1)
+            num_points = dist_matrix.shape[1]
+            triu_indices = torch.triu_indices(num_points, num_points, offset=1).to(keypoints.device)
+            distances = dist_matrix[:, triu_indices[0], triu_indices[1]]
         
         return distances
 
     def compute_derivatives(self, keypoints):
+        # Works for both [T, ...] and [B, T, ...]
         velocity = torch.zeros_like(keypoints)
-        velocity[1:] = keypoints[1:] - keypoints[:-1]
+        velocity[..., 1:, :, :, :] = keypoints[..., 1:, :, :, :] - keypoints[..., :-1, :, :, :]
         
         acceleration = torch.zeros_like(velocity)
-        acceleration[1:] = velocity[1:] - velocity[:-1]
+        acceleration[..., 1:, :, :, :] = velocity[..., 1:, :, :, :] - velocity[..., :-1, :, :, :]
         
         jerk = torch.zeros_like(acceleration)
-        jerk[1:] = acceleration[1:] - acceleration[:-1]
+        jerk[..., 1:, :, :, :] = acceleration[..., 1:, :, :, :] - acceleration[..., :-1, :, :, :]
         
         return velocity, acceleration, jerk
 
     def compute_angles(self, keypoints):
-        if keypoints.ndim == 4:
-            nose = keypoints[:, :, 0, :]
-            tail = keypoints[:, :, 3, :]
-        else:
-            nose = keypoints[:, 0, :]
-            tail = keypoints[:, 3, :]
+        # keypoints: [..., M, K, C]
+        # nose is index 0, tail_base is index 3 (based on BodyPartMapping)
+        nose = keypoints[..., 0, :]
+        tail = keypoints[..., 3, :]
             
         vec = nose - tail
         angles = torch.atan2(vec[..., 1], vec[..., 0])
@@ -54,22 +61,37 @@ class FeatureGenerator:
         return angles.unsqueeze(-1)
 
     def compute_window_stats(self, features):
-        stats_list = []
-        features_t = features.transpose(0, 1).unsqueeze(0)
+        # features: [B, T, D] or [T, D]
+        if features.dim() == 2:
+            features = features.unsqueeze(0) # Add batch dim
+            had_no_batch = True
+        else:
+            had_no_batch = False
+            
+        B, T, D = features.shape
+        features_t = features.transpose(1, 2) # [B, D, T]
         
+        stats_list = []
         for w in self.window_sizes:
             padding = w // 2
             avg = torch.nn.functional.avg_pool1d(features_t, kernel_size=w, stride=1, padding=padding)
             max_val = torch.nn.functional.max_pool1d(features_t, kernel_size=w, stride=1, padding=padding)
             
-            if avg.shape[2] != features.shape[0]:
-                avg = avg[:, :, :features.shape[0]]
-                max_val = max_val[:, :, :features.shape[0]]
+            # Handle padding mismatch
+            if avg.shape[2] > T:
+                avg = avg[:, :, :T]
+                max_val = max_val[:, :, :T]
+            elif avg.shape[2] < T:
+                avg = torch.nn.functional.pad(avg, (0, T - avg.shape[2]))
+                max_val = torch.nn.functional.pad(max_val, (0, T - max_val.shape[2]))
                 
-            stats_list.append(avg.squeeze(0).transpose(0, 1))
-            stats_list.append(max_val.squeeze(0).transpose(0, 1))
+            stats_list.append(avg.transpose(1, 2))
+            stats_list.append(max_val.transpose(1, 2))
             
-        return torch.cat(stats_list, dim=-1)
+        out = torch.cat(stats_list, dim=-1)
+        if had_no_batch:
+            out = out.squeeze(0)
+        return out
 
     def get_feature_dim(self, num_mice, num_keypoints):
         dim = num_mice * num_keypoints * 2
@@ -98,12 +120,18 @@ class FeatureGenerator:
         return dim
 
     def __call__(self, keypoints):
-        T, M, K, C = keypoints.shape
+        # keypoints: [T, M, K, C] or [B, T, M, K, C]
+        if keypoints.dim() == 5:
+            B, T, M, K, C = keypoints.shape
+            orig_shape_flat = (B, T, -1)
+        else:
+            T, M, K, C = keypoints.shape
+            orig_shape_flat = (T, -1)
         
         if not self.config.get('enable_strong_features', True):
-            return keypoints.view(T, -1)
+            return keypoints.view(*orig_shape_flat)
             
-        feature_list = [keypoints.view(T, -1)]
+        feature_list = [keypoints.view(*orig_shape_flat)]
         
         if self.use_distances:
             feature_list.append(self.compute_distances(keypoints))
@@ -111,14 +139,14 @@ class FeatureGenerator:
         velocity, acceleration, jerk = self.compute_derivatives(keypoints)
         
         if self.use_velocity:
-            feature_list.append(velocity.view(T, -1))
+            feature_list.append(velocity.view(*orig_shape_flat))
         if self.use_acceleration:
-            feature_list.append(acceleration.view(T, -1))
+            feature_list.append(acceleration.view(*orig_shape_flat))
         if self.use_jerk:
-            feature_list.append(jerk.view(T, -1))
+            feature_list.append(jerk.view(*orig_shape_flat))
             
         if self.use_angles:
-            feature_list.append(self.compute_angles(keypoints).view(T, -1))
+            feature_list.append(self.compute_angles(keypoints).view(*orig_shape_flat))
             
         combined_features = torch.cat(feature_list, dim=-1)
         

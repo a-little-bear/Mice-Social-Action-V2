@@ -35,27 +35,23 @@ from src.postprocessing.optimization import PostProcessor
 from src.training.trainer import Trainer
 
 def collate_fn(batch):
-    features, labels, lab_ids, subject_ids, video_ids = zip(*batch)
-    lengths = [f.shape[0] for f in features]
+    keypoints, labels, lab_ids, subject_ids, video_ids = zip(*batch)
+    lengths = [k.shape[0] for k in keypoints]
     max_len = max(lengths)
-    feat_dim = features[0].shape[1]
     
-    padded_features = torch.zeros(len(features), max_len, feat_dim)
+    # keypoints[0] shape: (T, M, K, 2)
+    kp_shape = keypoints[0].shape[1:]
+    padded_keypoints = torch.zeros(len(keypoints), max_len, *kp_shape)
     padded_labels = torch.zeros(len(labels), max_len, labels[0].shape[1])
     
-    for i, (f, l) in enumerate(zip(features, labels)):
+    for i, (k, l) in enumerate(zip(keypoints, labels)):
         end = lengths[i]
-        if f.shape[1] != feat_dim:
-             print(f"Warning: Feature dim mismatch at index {i}: {f.shape[1]} vs {feat_dim}. Truncating/Padding.")
-             min_dim = min(f.shape[1], feat_dim)
-             padded_features[i, :end, :min_dim] = f[:, :min_dim]
-        else:
-             padded_features[i, :end] = f
+        padded_keypoints[i, :end] = k
         padded_labels[i, :end] = l
         
-    return padded_features, padded_labels, lab_ids, subject_ids, video_ids
+    return padded_keypoints, padded_labels, lab_ids, subject_ids, video_ids
 
-def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=None, num_classes=None):
+def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=None, num_classes=None, feature_generator=None):
     print(f"Initializing model for {'Fold ' + str(fold_idx) if fold_idx is not None else 'Single Run'}...")
     
     # Update config with dynamic dims if provided
@@ -68,7 +64,7 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     model = model.to(device)
 
     # Optimization: torch.compile
-    if not config.get('test', False):
+    if not config.get('test', False) and config['training'].get('torch_compile', True):
         try:
             print("Compiling model with torch.compile...")
             # Use reduce-overhead for better stability than max-autotune
@@ -76,11 +72,11 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
         except Exception as e:
             print(f"Compilation failed, fallback to eager mode: {e}")
     else:
-        print("Skipping torch.compile in TEST MODE.")
+        print("Skipping torch.compile (Disabled in config or Test Mode).")
     
     post_processor = PostProcessor(config['post_processing'])
     
-    trainer = Trainer(model, train_loader, val_loader, config, device=device)
+    trainer = Trainer(model, train_loader, val_loader, config, device=device, feature_generator=feature_generator)
     
     try:
         best_f1 = 0.0
@@ -215,7 +211,7 @@ def train():
                     **loader_kwargs
                 )
                 
-                best_f1 = run_fold(config, train_loader, val_loader, device, fold, input_dim, num_classes)
+                best_f1 = run_fold(config, train_loader, val_loader, device, fold, input_dim, num_classes, feature_generator=full_dataset.feature_generator)
                 print(f"Fold {fold} Best F1: {best_f1:.4f}")
                 cv_scores.append(best_f1)
             
@@ -267,7 +263,7 @@ def train():
                 **loader_kwargs
             )
             
-            run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes)
+            run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes, feature_generator=full_dataset.feature_generator)
         
         except Exception as e:
             print(f"Error during training: {e}")

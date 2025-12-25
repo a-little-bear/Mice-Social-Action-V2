@@ -308,7 +308,6 @@ class MABeDataset(Dataset):
             keypoints = self.augmentor(keypoints)
             
         keypoints_tensor = torch.FloatTensor(keypoints)
-        features = self.feature_generator(keypoints_tensor)
         
         if self.mode == 'train':
             # Label Alignment for 25 FPS tracking data (AdaptableSnail)
@@ -320,14 +319,14 @@ class MABeDataset(Dataset):
                 label_start = int(start * (30.0 / 25.0))
                 label_end = int(end * (30.0 / 25.0))
             
-            # Pass features.shape[0] to ensure label length matches feature length
+            # Pass keypoints_tensor.shape[0] to ensure label length matches feature length
             label = self._create_label_tensor(
                 sample_info['annotation_path'], 
                 label_start, 
                 label_end, 
-                features.shape[0]
+                keypoints_tensor.shape[0]
             )
             
-            return features, label, lab_id, subject_id, video_id
+            return keypoints_tensor, label, lab_id, subject_id, video_id
             
-        return features, lab_id, subject_id, video_id
+        return keypoints_tensor, lab_id, subject_id, video_id

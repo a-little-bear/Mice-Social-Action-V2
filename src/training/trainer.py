@@ -9,12 +9,17 @@ from sklearn.metrics import f1_score
 from .losses import FocalLoss, MacroSoftF1Loss
 
 class Trainer:
-    def __init__(self, model, train_loader, val_loader, config, device='cuda'):
+    def __init__(self, model, train_loader, val_loader, config, device='cuda', feature_generator=None):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.config = config
         self.device = device
+        self.feature_generator = feature_generator
+        if self.feature_generator:
+            # No need to move to device yet, will be done in train_epoch if needed
+            # but actually FeatureGenerator is just a collection of torch ops
+            pass
         
         # Check for fused AdamW support
         use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters
@@ -49,10 +54,16 @@ class Trainer:
         total_loss = 0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         for batch in pbar:
-            features, labels, lab_ids, subject_ids, video_ids = batch
+            keypoints, labels, lab_ids, subject_ids, video_ids = batch
             
-            features = features.to(self.device, non_blocking=True)
+            keypoints = keypoints.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
+            
+            # Generate features on GPU
+            if self.feature_generator:
+                features = self.feature_generator(keypoints)
+            else:
+                features = keypoints
             
             # Convert lab_ids and subject_ids to tensors if they aren't already
             # This avoids graph breaks in torch.compile
@@ -140,9 +151,15 @@ class Trainer:
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
             for batch in pbar:
-                features, labels, lab_ids, subject_ids, video_ids = batch
+                keypoints, labels, lab_ids, subject_ids, video_ids = batch
                 
-                features = features.to(self.device)
+                keypoints = keypoints.to(self.device)
+                
+                # Generate features on GPU
+                if self.feature_generator:
+                    features = self.feature_generator(keypoints)
+                else:
+                    features = keypoints
                 
                 # Convert lab_ids and subject_ids to tensors for the model
                 if not isinstance(lab_ids, torch.Tensor):
