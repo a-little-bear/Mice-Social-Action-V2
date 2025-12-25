@@ -91,6 +91,7 @@ class MABeDataset(Dataset):
                 
                 num_windows = (T_est + self.stride - 1) // self.stride
                 
+                # 1. Regular sliding windows
                 for w in range(num_windows):
                     start = w * self.stride
                     end = start + self.window_size
@@ -115,6 +116,33 @@ class MABeDataset(Dataset):
                             ]
                             has_action = not overlaps.empty
                         self.labels.append(has_action)
+
+                # 2. Event-centered windows (Optimization from Mice-Social-Action)
+                if use_sampler and not anno_df.empty:
+                    for _, row in anno_df.iterrows():
+                        event_start = row['start_frame']
+                        event_stop = row['stop_frame']
+                        event_center = (event_start + event_stop) // 2
+                        
+                        # Center the window on the event
+                        start = max(0, event_center - self.window_size // 2)
+                        end = start + self.window_size
+                        
+                        # Avoid adding windows beyond estimated duration
+                        if start >= T_est:
+                            continue
+                            
+                        self.data.append({
+                            'tracking_path': tracking_file,
+                            'annotation_path': annotation_file,
+                            'lab_id': lab_id,
+                            'video_id': video_id,
+                            'subject_id': 0,
+                            'start': start,
+                            'end': end,
+                            'fps': fps
+                        })
+                        self.labels.append(True) # Guaranteed to have an action
 
         if self.preload:
             print(f"Starting parallel preload of all tracking data into RAM (Mode: {mode})...")

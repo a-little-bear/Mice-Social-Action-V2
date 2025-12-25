@@ -115,6 +115,21 @@ class Trainer:
             
             self.optimizer.zero_grad(set_to_none=True)
             
+            # Dynamic pos_weight calculation (Optimization from Mice-Social-Action)
+            if self.config['training'].get('dynamic_pos_weight', False):
+                # labels_fixed: [B, T, C]
+                pos = labels_fixed.sum(dim=(0, 1))
+                neg = (1.0 - labels_fixed).sum(dim=(0, 1))
+                # Calculate ratio per class, cap at 1000 to avoid extreme gradients
+                new_pos_weight = (neg / (pos + 1e-6)).clamp(min=1.0, max=1000.0)
+                
+                if hasattr(self.criterion, 'pos_weight'):
+                    self.criterion.pos_weight = new_pos_weight
+                elif isinstance(self.criterion, nn.BCEWithLogitsLoss):
+                    # BCEWithLogitsLoss pos_weight is not easily updatable after init
+                    # but we can use the functional version or re-init
+                    self.criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=new_pos_weight)
+
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = self.model(features, lab_ids, subject_ids)
                 
