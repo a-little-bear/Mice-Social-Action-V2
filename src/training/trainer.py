@@ -266,9 +266,26 @@ class Trainer:
                 probs = torch.sigmoid(logits)
                 
                 if collect_all:
-                    # Move to CPU and collect
-                    all_probs.append(probs.cpu())
-                    all_targets.append(labels.cpu())
+                    # Move to CPU and collect with reduced precision to save RAM
+                    # [B, T, C]
+                    p_cpu = probs.cpu()
+                    
+                    # Apply smoothing per batch if enabled to avoid storing raw probs
+                    if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
+                        p_np = p_cpu.numpy()
+                        p_smoothed = self.post_processor.apply_smoothing(p_np)
+                        all_probs.append(p_smoothed.astype(np.float16))
+                    else:
+                        all_probs.append(p_cpu.numpy().astype(np.float16))
+                        
+                    # Store targets as uint8 (0, 1, or 255 for NaN)
+                    t_np = labels.cpu().numpy()
+                    t_uint8 = np.full(t_np.shape, 255, dtype=np.uint8)
+                    mask_0 = t_np == 0
+                    mask_1 = t_np == 1
+                    t_uint8[mask_0] = 0
+                    t_uint8[mask_1] = 1
+                    all_targets.append(t_uint8)
                     
                     if isinstance(lab_ids, torch.Tensor):
                         all_lab_ids.append(lab_ids.cpu())
@@ -332,19 +349,44 @@ class Trainer:
                         lab_stats[lab][:, 2] += fn.astype(np.int64)
 
         if collect_all:
-            # Concatenate
-            print("\n[Post-Processing] Collecting and concatenating predictions...")
-            full_probs = torch.cat(all_probs, dim=0).numpy() # [N, T, C]
-            full_targets = torch.cat(all_targets, dim=0).numpy() # [N, T, C]
+            # Concatenate using a memory-efficient approach
+            print("\n[Post-Processing] Collecting and concatenating predictions (Memory-Efficient)...")
             
-            # Apply Smoothing per window (valid even if shuffled)
-            if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
-                full_probs = self.post_processor.apply_smoothing(full_probs)
+            N_total = sum(p.shape[0] for p in all_probs)
+            T, C = all_probs[0].shape[1], all_probs[0].shape[2]
+            
+            full_probs = np.empty((N_total, T, C), dtype=np.float16)
+            full_targets = np.empty((N_total, T, C), dtype=np.float32) # Use float32 for targets to handle NaNs
+            
+            curr = 0
+            for p_half, t_uint in zip(all_probs, all_targets):
+                batch_size = p_half.shape[0]
+                full_probs[curr:curr+batch_size] = p_half
+                
+                # Convert uint8 back to float32 with NaNs
+                t_float = t_uint.astype(np.float32)
+                t_float[t_uint == 255] = np.nan
+                full_targets[curr:curr+batch_size] = t_float
+                
+                curr += batch_size
+            
+            # Clear lists to free memory
+            del all_probs
+            del all_targets
+            gc.collect()
             
             # Flatten for processing: [N*T, C]
-            N, T, C = full_probs.shape
-            flat_probs = full_probs.reshape(-1, C)
+            # Note: full_probs is already smoothed if smoothing was enabled
+            flat_probs = full_probs.reshape(-1, C).astype(np.float32)
             flat_targets = full_targets.reshape(-1, C)
+            
+            # We can delete the 3D arrays now if we don't need them for gap filling
+            # But wait, gap filling needs temporal structure. 
+            # However, our current gap filling works on the flattened array which is technically 
+            # a concatenation of windows. This is an approximation.
+            del full_probs
+            del full_targets
+            gc.collect()
             
             # Handle lab_ids
             if len(all_lab_ids) > 0 and isinstance(all_lab_ids[0], torch.Tensor):
