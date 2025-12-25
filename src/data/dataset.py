@@ -5,6 +5,7 @@ import pandas as pd
 import os
 import json
 import ast
+from concurrent.futures import ThreadPoolExecutor
 from .transforms import CoordinateTransform, Augmentation, FPSCorrection, BodyPartMapping
 from .features import FeatureGenerator
 from .sampling import ActionRichSampler
@@ -112,15 +113,22 @@ class MABeDataset(Dataset):
                         self.labels.append(has_action)
 
         if self.preload:
-            print(f"Starting preload of all tracking data into RAM (Mode: {mode})...")
+            print(f"Starting parallel preload of all tracking data into RAM (Mode: {mode})...")
             unique_videos = {}
             for d in self.data:
                 key = (d['tracking_path'], d['lab_id'])
                 unique_videos[key] = True
             
             from tqdm import tqdm
-            for (path, lab_id) in tqdm(unique_videos.keys(), desc="Preloading Videos"):
-                self._load_video(path, lab_id)
+            video_list = list(unique_videos.keys())
+            
+            # Use ThreadPoolExecutor for parallel I/O and processing
+            # 22 cores available, using 16 workers to leave some for system/other tasks
+            max_workers = min(len(video_list), 16)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(tqdm(executor.map(lambda x: self._load_video(*x), video_list), 
+                          total=len(video_list), desc="Preloading Videos"))
+            
             print(f"Preloaded {len(self.video_cache)} videos into RAM.")
 
         if mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich':

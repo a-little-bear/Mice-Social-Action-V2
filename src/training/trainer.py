@@ -22,8 +22,8 @@ class Trainer:
 
         self.optimizer = torch.optim.AdamW(
             model.parameters(), 
-            lr=config['training']['learning_rate'],
-            weight_decay=config['training'].get('weight_decay', 0.01),
+            lr=float(config['training']['learning_rate']),
+            weight_decay=float(config['training'].get('weight_decay', 0.01)),
             **extra_args
         )
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -119,8 +119,10 @@ class Trainer:
                 features, labels, lab_ids, subject_ids = batch
                 
                 features = features.to(self.device)
-                lab_ids = lab_ids.to(self.device)
-                subject_ids = subject_ids.to(self.device)
+                if isinstance(lab_ids, torch.Tensor):
+                    lab_ids = lab_ids.to(self.device)
+                if isinstance(subject_ids, torch.Tensor):
+                    subject_ids = subject_ids.to(self.device)
                 
                 outputs = self.model(features, lab_ids, subject_ids)
                 if isinstance(outputs, tuple):
@@ -134,8 +136,13 @@ class Trainer:
                 all_targets.append(labels.cpu().numpy())
                 
                 T = features.shape[1]
-                lab_ids_expanded = lab_ids.unsqueeze(1).expand(-1, T)
-                all_lab_ids.append(lab_ids_expanded.cpu().numpy())
+                if isinstance(lab_ids, torch.Tensor):
+                    lab_ids_expanded = lab_ids.unsqueeze(1).expand(-1, T).cpu().numpy()
+                else:
+                    # Assume it's a list/tuple of strings
+                    lab_ids_expanded = np.array([[l] * T for l in lab_ids])
+                
+                all_lab_ids.append(lab_ids_expanded)
 
         flat_preds = np.concatenate(all_preds).reshape(-1, all_preds[0].shape[-1])
         flat_targets = np.concatenate(all_targets).reshape(-1, all_targets[0].shape[-1])

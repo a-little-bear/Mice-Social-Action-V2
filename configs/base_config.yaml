@@ -72,7 +72,7 @@ training:
   optimizer: "fused_adamw"
   epochs: 50
   learning_rate: 0.001
-  weight_decay: 1e-4
+  weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
   loss_type: "focal" # Options: "focal" (Class Imbalance), "ce" (Cross Entropy)
   mask_unlabeled: true
