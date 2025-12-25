@@ -5,7 +5,6 @@ import pandas as pd
 import os
 import json
 import ast
-from torch.multiprocessing import Manager
 from concurrent.futures import ThreadPoolExecutor
 from .transforms import CoordinateTransform, Augmentation, FPSCorrection, BodyPartMapping
 from .features import FeatureGenerator
@@ -30,13 +29,8 @@ class MABeDataset(Dataset):
         
         self.data = []
         self.labels = []
-        
-        # Use multiprocessing.Manager to share cache across worker processes
-        # This prevents each worker from having its own copy of the cache
-        self._manager = Manager()
-        self.video_cache = self._manager.dict()
-        self.anno_cache = self._manager.dict()
-        
+        self.video_cache = {}
+        self.anno_cache = {}
         self.cache_size = config['data'].get('cache_size', 128)
         self.preload = config['data'].get('preload', False)
         
@@ -169,11 +163,13 @@ class MABeDataset(Dataset):
         else:
             try:
                 df = pd.read_parquet(annotation_path)
-                if not self.preload and len(self.anno_cache) > self.cache_size:
+                # Only pop if not preloading and cache is full
+                if not self.preload and len(self.anno_cache) >= self.cache_size:
+                    # Remove oldest entry
+                    it = iter(self.anno_cache)
                     try:
-                        first_key = list(self.anno_cache.keys())[0]
-                        self.anno_cache.pop(first_key)
-                    except:
+                        self.anno_cache.pop(next(it))
+                    except (StopIteration, KeyError):
                         pass
                 self.anno_cache[annotation_path] = df
             except:
@@ -258,12 +254,11 @@ class MABeDataset(Dataset):
                     keypoints = df_interp.values.reshape(keypoints.shape)
                     keypoints = np.nan_to_num(keypoints)
 
-            if not self.preload and len(self.video_cache) > self.cache_size:
+            if not self.preload and len(self.video_cache) >= self.cache_size:
+                it = iter(self.video_cache)
                 try:
-                    # Simple way to clear some space in shared dict
-                    first_key = list(self.video_cache.keys())[0]
-                    self.video_cache.pop(first_key)
-                except:
+                    self.video_cache.pop(next(it))
+                except (StopIteration, KeyError):
                     pass
             self.video_cache[cache_key] = keypoints
             

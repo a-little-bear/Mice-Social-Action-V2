@@ -11,7 +11,7 @@ data:
   batch_size: 1024
   num_workers: 16 # Reduced from 16 to save memory
   window_size: 512
-  preload: false
+  preload: true
   pin_memory: true
   prefetch_factor: 4 # Reduced from 4
   persistent_workers: true
