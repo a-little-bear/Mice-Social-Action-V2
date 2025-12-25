@@ -147,25 +147,26 @@ def train():
             train_subsampler = SubsetRandomSampler(train_ids)
             val_subsampler = SubsetRandomSampler(val_ids)
             
+            loader_kwargs = {
+                'batch_size': config['data']['batch_size'],
+                'num_workers': config['data']['num_workers'],
+                'collate_fn': collate_fn,
+                'pin_memory': config['data'].get('pin_memory', False),
+            }
+            
+            if loader_kwargs['num_workers'] > 0:
+                loader_kwargs['prefetch_factor'] = config['data'].get('prefetch_factor', 2)
+                loader_kwargs['persistent_workers'] = config['data'].get('persistent_workers', False)
+
             train_loader = DataLoader(
                 full_dataset, 
-                batch_size=config['data']['batch_size'], 
                 sampler=train_subsampler,
-                num_workers=config['data']['num_workers'],
-                collate_fn=collate_fn,
-                pin_memory=config['data'].get('pin_memory', False),
-                prefetch_factor=config['data'].get('prefetch_factor', 2),
-                persistent_workers=config['data'].get('persistent_workers', False)
+                **loader_kwargs
             )
             val_loader = DataLoader(
                 full_dataset, 
-                batch_size=config['data']['batch_size'], 
                 sampler=val_subsampler,
-                num_workers=config['data']['num_workers'],
-                collate_fn=collate_fn,
-                pin_memory=config['data'].get('pin_memory', False),
-                prefetch_factor=config['data'].get('prefetch_factor', 2),
-                persistent_workers=config['data'].get('persistent_workers', False)
+                **loader_kwargs
             )
             
             best_f1 = run_fold(config, train_loader, val_loader, device, fold, input_dim, num_classes)
@@ -181,25 +182,26 @@ def train():
         # Standard split logic
         val_dataset = MABeDataset(config['data']['data_dir'], config, mode='val')
         
+        loader_kwargs = {
+            'batch_size': config['data']['batch_size'],
+            'num_workers': config['data']['num_workers'],
+            'collate_fn': collate_fn,
+            'pin_memory': config['data'].get('pin_memory', False),
+        }
+        
+        if loader_kwargs['num_workers'] > 0:
+            loader_kwargs['prefetch_factor'] = config['data'].get('prefetch_factor', 2)
+            loader_kwargs['persistent_workers'] = config['data'].get('persistent_workers', False)
+
         train_loader = DataLoader(
             full_dataset, 
-            batch_size=config['data']['batch_size'], 
             shuffle=True,
-            num_workers=config['data']['num_workers'],
-            collate_fn=collate_fn,
-            pin_memory=config['data'].get('pin_memory', False),
-            prefetch_factor=config['data'].get('prefetch_factor', 2),
-            persistent_workers=config['data'].get('persistent_workers', False)
+            **loader_kwargs
         )
         val_loader = DataLoader(
             val_dataset, 
-            batch_size=config['data']['batch_size'], 
             shuffle=False,
-            num_workers=config['data']['num_workers'],
-            collate_fn=collate_fn,
-            pin_memory=config['data'].get('pin_memory', False),
-            prefetch_factor=config['data'].get('prefetch_factor', 2),
-            persistent_workers=config['data'].get('persistent_workers', False)
+            **loader_kwargs
         )
         
         run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes)
