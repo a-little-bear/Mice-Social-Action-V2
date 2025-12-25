@@ -9,13 +9,13 @@ test: false
 data:
   data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 1024
-  num_workers: 16 # Reduced from 16 to save memory
+  num_workers: 8 # Reduced to 8 to save memory
   window_size: 512
-  preload: true
+  preload: false # MUST be false. 105GB dataset + 110GB RAM is too tight for preload.
   pin_memory: true
-  prefetch_factor: 4 # Reduced from 4
+  prefetch_factor: 2 # Reduced to 2 to limit data in flight
   persistent_workers: true
-  cache_size: 64 # Reduced from 256 to prevent memory multiplication across workers
+  cache_size: 8 # Reduced to 8. Each worker will cache 8 videos locally.
   
   sampling:
     strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
