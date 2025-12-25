@@ -9,13 +9,13 @@ test: false
 data:
   data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 1024
-  num_workers: 16
+  num_workers: 16 # Reduced from 16 to save memory
   window_size: 512
   preload: false
   pin_memory: true
-  prefetch_factor: 4
+  prefetch_factor: 4 # Reduced from 4
   persistent_workers: true
-  cache_size: 256
+  cache_size: 64 # Reduced from 256 to prevent memory multiplication across workers
   
   sampling:
     strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
