@@ -6,6 +6,7 @@ import json
 import inspect
 from tqdm import tqdm
 from sklearn.metrics import f1_score
+from collections import defaultdict
 from .losses import FocalLoss, MacroSoftF1Loss
 
 class Trainer:
@@ -143,10 +144,9 @@ class Trainer:
 
     def validate(self, epoch, post_processor=None):
         self.model.eval()
-        all_preds = []
-        all_targets = []
-        all_lab_ids = []
-        all_video_ids = []
+        
+        # Incremental stats storage: lab_id -> {class_idx: {'tp': 0, 'fp': 0, 'fn': 0}}
+        lab_stats = defaultdict(lambda: defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0}))
         
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
@@ -189,60 +189,57 @@ class Trainer:
                     
                 probs = torch.sigmoid(logits)
                 
-                all_preds.append(probs.cpu().numpy())
-                all_targets.append(labels.cpu().numpy())
-                all_lab_ids.append(np.array(lab_ids))
-                all_video_ids.append(np.array(video_ids))
-
-        # Flatten batches but keep video/lab structure
-        # preds: [N_samples, T, C], targets: [N_samples, T, C]
-        preds = np.concatenate(all_preds, axis=0)
-        targets = np.concatenate(all_targets, axis=0)
-        labs = np.concatenate(all_lab_ids, axis=0)
-        vids = np.concatenate(all_video_ids, axis=0)
-        
-        num_classes = preds.shape[-1]
-        
-        # Apply post-processing if enabled
-        if post_processor:
-            # Flatten for post-processor which expects [Total_Frames, C]
-            T = preds.shape[1]
-            flat_preds = preds.reshape(-1, num_classes)
-            flat_labs = np.repeat(labs, T)
-            binary_preds = post_processor(flat_preds, flat_labs).reshape(preds.shape)
-        else:
-            binary_preds = (preds > 0.5).astype(int)
-
-        # Official MABe F1 Logic: Aggregate TP, FP, FN per Lab
-        lab_scores = []
-        unique_labs = np.unique(labs)
-        
-        for lab in unique_labs:
-            lab_mask = (labs == lab)
-            lab_preds = binary_preds[lab_mask] # [N_lab_videos, T, C]
-            lab_targets = targets[lab_mask]     # [N_lab_videos, T, C]
-            
-            # Filter out NaN frames (unlabeled)
-            # valid_mask: [N_lab_videos, T]
-            valid_mask = ~np.isnan(lab_targets).any(axis=-1)
-            
-            action_f1s = []
-            for c in range(num_classes):
-                tp = 0
-                fp = 0
-                fn = 0
+                # Binarize (Simple thresholding for validation monitoring to save memory)
+                # Note: Post-processing (smoothing) is skipped here because validation batches 
+                # are shuffled windows, so temporal smoothing across windows is invalid.
+                preds_bin = (probs > 0.5).float()
                 
-                # Aggregate across all videos in this lab
-                for v in range(lab_preds.shape[0]):
-                    v_valid = valid_mask[v]
-                    if not np.any(v_valid): continue
+                # Move to CPU for stats accumulation
+                preds_np = preds_bin.cpu().numpy()
+                targets_np = labels.cpu().numpy()
+                
+                # Handle lab_ids being a tuple or list from DataLoader
+                if isinstance(lab_ids, torch.Tensor):
+                    lab_ids_np = lab_ids.cpu().numpy()
+                else:
+                    lab_ids_np = np.array(lab_ids)
+
+                # Update stats incrementally
+                B, T, C = preds_np.shape
+                
+                for i in range(B):
+                    lab = lab_ids_np[i]
                     
-                    v_p = lab_preds[v, v_valid, c]
-                    v_t = lab_targets[v, v_valid, c]
+                    # Mask valid frames (not NaN in targets)
+                    # targets_np[i]: [T, C]
+                    valid_mask = ~np.isnan(targets_np[i]).any(axis=-1) # [T]
                     
-                    tp += np.sum((v_p == 1) & (v_t == 1))
-                    fp += np.sum((v_p == 1) & (v_t == 0))
-                    fn += np.sum((v_p == 0) & (v_t == 1))
+                    if not np.any(valid_mask):
+                        continue
+                        
+                    p = preds_np[i][valid_mask] # [T_valid, C]
+                    t = targets_np[i][valid_mask] # [T_valid, C]
+                    
+                    for c in range(C):
+                        tp = np.sum((p[:, c] == 1) & (t[:, c] == 1))
+                        fp = np.sum((p[:, c] == 1) & (t[:, c] == 0))
+                        fn = np.sum((p[:, c] == 0) & (t[:, c] == 1))
+                        
+                        lab_stats[lab][c]['tp'] += tp
+                        lab_stats[lab][c]['fp'] += fp
+                        lab_stats[lab][c]['fn'] += fn
+
+        # Compute F1 from accumulated stats
+        lab_scores = []
+        
+        for lab, class_stats in lab_stats.items():
+            action_f1s = []
+            # Assuming num_classes is consistent
+            # We iterate over keys in class_stats which are class indices
+            for c, stats in class_stats.items():
+                tp = stats['tp']
+                fp = stats['fp']
+                fn = stats['fn']
                 
                 if (2 * tp + fp + fn) == 0:
                     f1 = 0.0
@@ -255,8 +252,8 @@ class Trainer:
         
         final_f1 = np.mean(lab_scores) if lab_scores else 0.0
         
-        # For compatibility with existing save logic, return flat arrays for the best model
-        return final_f1, preds.reshape(-1, num_classes), targets.reshape(-1, num_classes)
+        # Return None for preds/targets to save memory
+        return final_f1, None, None
 
     def save_results(self, epoch, f1):
         self.results.append({'epoch': epoch, 'f1': f1})
