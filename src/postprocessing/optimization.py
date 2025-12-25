@@ -61,8 +61,11 @@ class PostProcessor:
         Apply temporal smoothing (EMA or Median).
         predictions: [T, C]
         """
-        method = self.config['smoothing']['method']
+        method = self.config.get('smoothing', {}).get('method', 'none')
         
+        if method == 'none':
+            return predictions
+            
         if method == 'median_filter':
             window_size = self.config['smoothing']['window_size']
             # Apply median filter along time dimension for each class
@@ -97,7 +100,7 @@ class PostProcessor:
         Fill short gaps in binary predictions.
         predictions: [T, C] binary
         """
-        max_gap = self.config['gap_filling']['max_gap']
+        max_gap = self.config.get('gap_filling', {}).get('max_gap', 0)
         if max_gap <= 0:
             return predictions
             

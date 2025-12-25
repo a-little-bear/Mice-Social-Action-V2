@@ -86,9 +86,14 @@ cross_validation:
   n_folds: 5
 
 post_processing:
-  min_duration: 5 # Minimum frames for an action
-  smoothing_window: 7 # Window size for majority voting
-  fill_gaps: true # Fill short gaps between same actions
-  gap_threshold: 10 # Max gap size to fill
+  optimize_thresholds: false
+  smoothing:
+    method: "median_filter" # Options: "median_filter", "ema", "none"
+    window_size: 7
+    alpha: 0.3 # For EMA
+  gap_filling:
+    max_gap: 10
+    min_duration: 5
+  tie_breaking: "none" # Options: "z_score", "none"
 
 
