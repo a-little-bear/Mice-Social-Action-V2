@@ -44,7 +44,9 @@ class Trainer:
         if loss_type == 'softmax':
             self.criterion = nn.CrossEntropyLoss(reduction='none')
         elif loss_type == 'focal':
-            self.criterion = FocalLoss(reduction='none')
+            pos_weight_val = float(config['training'].get('pos_weight', 1.0))
+            pos_weight = torch.tensor(pos_weight_val, device=device)
+            self.criterion = FocalLoss(reduction='none', pos_weight=pos_weight)
         elif loss_type == 'soft_f1':
             self.criterion = MacroSoftF1Loss(num_classes=37)
         elif loss_type == 'macro_soft_f1':
@@ -117,6 +119,11 @@ class Trainer:
                 # Handle NaNs for target generation to avoid issues in compiled kernels
                 labels_fixed = torch.nan_to_num(labels, nan=0.0)
                 
+                # Compute mask early
+                mask = None
+                if self.config['training']['mask_unlabeled']:
+                    mask = ~torch.isnan(labels).any(dim=-1) if labels.ndim == 3 else ~torch.isnan(labels)
+
                 if isinstance(outputs, tuple):
                     logits, detection_logits = outputs
                     # Debug logits
@@ -129,22 +136,37 @@ class Trainer:
                     if self.config['training']['loss_type'] == 'softmax':
                         targets = torch.argmax(labels_fixed, dim=-1)
                         cls_loss = self.criterion(logits.transpose(1, 2), targets)
+                    elif isinstance(self.criterion, OHEMLoss):
+                        cls_loss = self.criterion(logits, labels_fixed, mask=mask)
                     else:
                         cls_loss = self.criterion(logits, labels_fixed)
                     
-                    loss = cls_loss.mean() + 0.5 * det_loss
+                    # If OHEM, cls_loss is already scalar mean. If not, it might be tensor.
+                    if cls_loss.ndim > 0 and mask is not None and self.config['training']['loss_type'] not in ['soft_f1', 'softmax']:
+                         # Apply mask to cls_loss if it hasn't been reduced yet
+                         while mask.ndim < cls_loss.ndim:
+                            mask = mask.unsqueeze(-1)
+                         cls_loss = torch.where(mask, cls_loss, torch.zeros_like(cls_loss))
+                         denom = mask.expand_as(cls_loss).sum()
+                         cls_loss = cls_loss.sum() / (denom + 1e-6)
+                    elif cls_loss.ndim > 0:
+                         cls_loss = cls_loss.mean()
+
+                    loss = cls_loss + 0.5 * det_loss
                 else:
                     logits = outputs
                     if self.config['training']['loss_type'] == 'softmax':
                         targets = torch.argmax(labels_fixed, dim=-1)
                         loss = self.criterion(logits.transpose(1, 2), targets)
+                    elif isinstance(self.criterion, OHEMLoss):
+                        loss = self.criterion(logits, labels_fixed, mask=mask)
                     elif self.config['training']['loss_type'] == 'soft_f1':
                         loss = self.criterion(logits, labels_fixed)
                     else:
                         loss = self.criterion(logits, labels_fixed)
                 
-                if self.config['training']['mask_unlabeled'] and self.config['training']['loss_type'] not in ['soft_f1']:
-                    mask = ~torch.isnan(labels).any(dim=-1) if labels.ndim == 3 else ~torch.isnan(labels)
+                # Apply mask if loss is not already reduced (OHEM reduces internally)
+                if self.config['training']['mask_unlabeled'] and self.config['training']['loss_type'] not in ['soft_f1', 'ohem']:
                     if loss.ndim > 0:
                         # Ensure mask matches loss dimensions for broadcasting
                         while mask.ndim < loss.ndim:
@@ -170,7 +192,10 @@ class Trainer:
             
         return total_loss / len(self.train_loader)
 
-    def validate(self, epoch):
+    def validate(self, epoch, post_processor=None):
+        if post_processor is not None:
+            self.post_processor = post_processor
+
         self.model.eval()
         lab_stats = defaultdict(lambda: defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0}))
         
