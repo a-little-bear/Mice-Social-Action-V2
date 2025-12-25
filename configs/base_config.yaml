@@ -35,14 +35,14 @@ data:
     use_acceleration: true
     use_jerk: true # Enabled. Fast on GPU.
     use_angles: true
-    use_window_stats: true
+    use_window_stats: false
     window_sizes: [5, 15, 30]
 
   augmentation:
     enabled: true
     flip: true
     rotate: true
-    time_stretch: true
+    time_stretch: false
     noise: 0.01
 
 model:
