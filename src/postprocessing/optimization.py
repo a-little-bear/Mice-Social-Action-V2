@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.signal import medfilt
+from scipy.signal import medfilt, lfilter
 from sklearn.metrics import f1_score
 
 class PostProcessor:
@@ -143,29 +143,27 @@ class PostProcessor:
             
         if method == 'median_filter':
             window_size = self.config['smoothing']['window_size']
-            # Apply median filter along time dimension for each class
-            smoothed = np.zeros_like(predictions)
-            for c in range(predictions.shape[1]):
-                smoothed[:, c] = medfilt(predictions[:, c], kernel_size=window_size)
-            return smoothed
+            # Ensure window_size is odd
+            if window_size % 2 == 0:
+                window_size += 1
+            # Apply median filter along time dimension (axis 0)
+            # kernel_size must be odd
+            return medfilt(predictions, kernel_size=[window_size, 1])
             
         elif method == 'ema':
             alpha = self.config['smoothing']['alpha']
-            # Simple EMA implementation
-            # y[t] = alpha * x[t] + (1-alpha) * y[t-1]
-            # Can use pandas ewm for speed if available, or loop
+            # EMA is IIR filter: y[t] = alpha*x[t] + (1-alpha)*y[t-1]
+            # Transfer function: H(z) = alpha / (1 - (1-alpha)z^-1)
+            b = [alpha]
+            a = [1, -(1-alpha)]
+            
             # Forward pass
-            smoothed = np.zeros_like(predictions)
-            smoothed[0] = predictions[0]
-            for t in range(1, len(predictions)):
-                smoothed[t] = alpha * predictions[t] + (1-alpha) * smoothed[t-1]
+            smoothed = lfilter(b, a, predictions, axis=0)
             
             # Backward pass (Bidirectional smoothing)
-            smoothed_back = np.zeros_like(predictions)
-            smoothed_back[-1] = predictions[-1]
-            for t in range(len(predictions)-2, -1, -1):
-                smoothed_back[t] = alpha * predictions[t] + (1-alpha) * smoothed_back[t+1]
-                
+            # Flip, filter, flip back
+            smoothed_back = lfilter(b, a, predictions[::-1], axis=0)[::-1]
+            
             return (smoothed + smoothed_back) / 2.0
         
         return predictions

@@ -270,22 +270,46 @@ class Trainer:
                         lab_ids_np = np.array(lab_ids)
 
                     B, T, C = preds_np.shape
-                    for i in range(B):
-                        lab = lab_ids_np[i]
-                        valid_mask = ~np.isnan(targets_np[i]).any(axis=-1)
-                        if not np.any(valid_mask): continue
+                    
+                    # Vectorized stats accumulation
+                    unique_labs = np.unique(lab_ids_np)
+                    for lab in unique_labs:
+                        # Select batch items for this lab
+                        batch_mask = (lab_ids_np == lab)
                         
-                        p = preds_np[i][valid_mask]
-                        t = targets_np[i][valid_mask]
+                        # [N_lab, T, C]
+                        p_lab = preds_np[batch_mask]
+                        t_lab = targets_np[batch_mask]
                         
-                        for c in range(C):
-                            tp = np.sum((p[:, c] == 1) & (t[:, c] == 1))
-                            fp = np.sum((p[:, c] == 1) & (t[:, c] == 0))
-                            fn = np.sum((p[:, c] == 0) & (t[:, c] == 1))
+                        # Mask invalid frames
+                        # t_lab is [N_lab, T, C]
+                        # valid_mask is [N_lab, T]
+                        valid_mask = ~np.isnan(t_lab).any(axis=-1)
+                        
+                        if not np.any(valid_mask):
+                            continue
                             
-                            lab_stats[lab][c]['tp'] += tp
-                            lab_stats[lab][c]['fp'] += fp
-                            lab_stats[lab][c]['fn'] += fn
+                        # Flatten valid frames: [N_valid, C]
+                        p_flat = p_lab[valid_mask]
+                        t_flat = t_lab[valid_mask]
+                        
+                        # Calculate stats for all classes at once
+                        # p_flat, t_flat are binary (0 or 1)
+                        
+                        # TP: p=1, t=1
+                        tp = (p_flat * t_flat).sum(axis=0)
+                        
+                        # FP: p=1, t=0
+                        fp = (p_flat * (1 - t_flat)).sum(axis=0)
+                        
+                        # FN: p=0, t=1
+                        fn = ((1 - p_flat) * t_flat).sum(axis=0)
+                        
+                        # Update stats
+                        for c in range(C):
+                            lab_stats[lab][c]['tp'] += int(tp[c])
+                            lab_stats[lab][c]['fp'] += int(fp[c])
+                            lab_stats[lab][c]['fn'] += int(fn[c])
 
         if collect_all:
             # Concatenate
