@@ -27,6 +27,54 @@ mice_social_action_new/
 └── README.md
 ```
 
+## Installation
+
+1.  **Environment Setup**:
+    ```bash
+    conda create -n mabe python=3.10
+    conda activate mabe
+    ```
+
+2.  **Dependencies**:
+    ```bash
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    pip install pandas numpy pyarrow fastparquet tqdm pyyaml scikit-learn
+    ```
+
+## Usage
+
+### Training
+To start training with the default configuration:
+```bash
+python scripts/train.py
+```
+
+### Configuration
+Modify `configs/base_config.yaml` to change model architecture, data paths, or training hyperparameters.
+
+## Performance Tuning & Hardware Recommendations
+
+### Recommended Hardware
+*   **GPU**: NVIDIA RTX 6000 Ada (96GB) or RTX 4090/5090 (24GB+).
+    *   *Note*: For 96GB VRAM, you can significantly increase `batch_size` (e.g., 512 or 1024).
+*   **RAM**: 64GB+ (128GB+ recommended for full dataset preloading).
+*   **Storage**: NVMe SSD is critical if not using RAM preloading.
+
+### Optimization Settings (in `configs/base_config.yaml`)
+
+For high-end workstations (e.g., 22-core CPU, 96GB VRAM), use the following settings to maximize utilization:
+
+```yaml
+data:
+  # ...
+  batch_size: 512       # Increase to fill VRAM (96GB can handle 1024+)
+  num_workers: 16       # Set to ~70% of CPU cores for fast data augmentation
+  preload: true         # CRITICAL: Loads all data into RAM to eliminate disk I/O bottleneck
+  cache_size: 5000      # Keep high when preload is true
+```
+
+**Performance Note**: Enabling `preload: true` on a system with sufficient RAM can speed up training by **10-50x** by avoiding repeated disk reads and Parquet parsing.
+
 ## Module Mapping
 
 ### Module A: Preprocessing & Augmentation
@@ -58,8 +106,3 @@ mice_social_action_new/
     - **Smoothing**: `apply_smoothing` (Median Filter).
     - **Gap Filling**: `fill_gaps`.
 - **Config**: Controlled by `post_processing`.
-
-## Usage
-
-1.  **Configure**: Edit `configs/base_config.yaml` to select model types and toggle features for ablation.
-2.  **Train**: Run `python scripts/train.py`.
