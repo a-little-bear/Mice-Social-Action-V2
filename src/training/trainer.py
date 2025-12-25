@@ -112,19 +112,24 @@ class Trainer:
         all_preds = []
         all_targets = []
         all_lab_ids = []
+        all_video_ids = []
         
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
             for batch in pbar:
-                features, labels, lab_ids, subject_ids = batch
+                features, labels, lab_ids, subject_ids, video_ids = batch
                 
                 features = features.to(self.device)
                 if isinstance(lab_ids, torch.Tensor):
-                    lab_ids = lab_ids.to(self.device)
+                    lab_ids_dev = lab_ids.to(self.device)
+                else:
+                    lab_ids_dev = lab_ids
                 if isinstance(subject_ids, torch.Tensor):
-                    subject_ids = subject_ids.to(self.device)
+                    subject_ids_dev = subject_ids.to(self.device)
+                else:
+                    subject_ids_dev = subject_ids
                 
-                outputs = self.model(features, lab_ids, subject_ids)
+                outputs = self.model(features, lab_ids_dev, subject_ids_dev)
                 if isinstance(outputs, tuple):
                     logits, _ = outputs
                 else:
@@ -134,36 +139,72 @@ class Trainer:
                 
                 all_preds.append(probs.cpu().numpy())
                 all_targets.append(labels.cpu().numpy())
-                
-                T = features.shape[1]
-                if isinstance(lab_ids, torch.Tensor):
-                    lab_ids_expanded = lab_ids.unsqueeze(1).expand(-1, T).cpu().numpy()
-                else:
-                    # Assume it's a list/tuple of strings
-                    lab_ids_expanded = np.array([[l] * T for l in lab_ids])
-                
-                all_lab_ids.append(lab_ids_expanded)
+                all_lab_ids.append(np.array(lab_ids))
+                all_video_ids.append(np.array(video_ids))
 
-        flat_preds = np.concatenate(all_preds).reshape(-1, all_preds[0].shape[-1])
-        flat_targets = np.concatenate(all_targets).reshape(-1, all_targets[0].shape[-1])
-        flat_labs = np.concatenate(all_lab_ids).reshape(-1)
+        # Flatten batches but keep video/lab structure
+        # preds: [N_samples, T, C], targets: [N_samples, T, C]
+        preds = np.concatenate(all_preds, axis=0)
+        targets = np.concatenate(all_targets, axis=0)
+        labs = np.concatenate(all_lab_ids, axis=0)
+        vids = np.concatenate(all_video_ids, axis=0)
         
-        valid_mask = ~np.isnan(flat_targets).any(axis=1)
-        flat_preds = flat_preds[valid_mask]
-        flat_targets = flat_targets[valid_mask]
-        flat_labs = flat_labs[valid_mask]
+        num_classes = preds.shape[-1]
         
-        if post_processor and self.config['post_processing']['optimize_thresholds']:
-            post_processor.optimize_thresholds(flat_preds, flat_targets, flat_labs)
-            
+        # Apply post-processing if enabled
         if post_processor:
-            binary_preds = post_processor(flat_preds, flat_labs)
+            # Flatten for post-processor which expects [Total_Frames, C]
+            T = preds.shape[1]
+            flat_preds = preds.reshape(-1, num_classes)
+            flat_labs = np.repeat(labs, T)
+            binary_preds = post_processor(flat_preds, flat_labs).reshape(preds.shape)
         else:
-            binary_preds = (flat_preds > 0.5).astype(int)
-            
-        f1 = f1_score(flat_targets, binary_preds, average='macro')
+            binary_preds = (preds > 0.5).astype(int)
+
+        # Official MABe F1 Logic: Aggregate TP, FP, FN per Lab
+        lab_scores = []
+        unique_labs = np.unique(labs)
         
-        return f1, flat_preds, flat_targets
+        for lab in unique_labs:
+            lab_mask = (labs == lab)
+            lab_preds = binary_preds[lab_mask] # [N_lab_videos, T, C]
+            lab_targets = targets[lab_mask]     # [N_lab_videos, T, C]
+            
+            # Filter out NaN frames (unlabeled)
+            # valid_mask: [N_lab_videos, T]
+            valid_mask = ~np.isnan(lab_targets).any(axis=-1)
+            
+            action_f1s = []
+            for c in range(num_classes):
+                tp = 0
+                fp = 0
+                fn = 0
+                
+                # Aggregate across all videos in this lab
+                for v in range(lab_preds.shape[0]):
+                    v_valid = valid_mask[v]
+                    if not np.any(v_valid): continue
+                    
+                    v_p = lab_preds[v, v_valid, c]
+                    v_t = lab_targets[v, v_valid, c]
+                    
+                    tp += np.sum((v_p == 1) & (v_t == 1))
+                    fp += np.sum((v_p == 1) & (v_t == 0))
+                    fn += np.sum((v_p == 0) & (v_t == 1))
+                
+                if (2 * tp + fp + fn) == 0:
+                    f1 = 0.0
+                else:
+                    f1 = (2 * tp) / (2 * tp + fp + fn)
+                action_f1s.append(f1)
+            
+            if action_f1s:
+                lab_scores.append(np.mean(action_f1s))
+        
+        final_f1 = np.mean(lab_scores) if lab_scores else 0.0
+        
+        # For compatibility with existing save logic, return flat arrays for the best model
+        return final_f1, preds.reshape(-1, num_classes), targets.reshape(-1, num_classes)
 
     def save_results(self, epoch, f1):
         self.results.append({'epoch': epoch, 'f1': f1})

@@ -282,6 +282,6 @@ class MABeDataset(Dataset):
                 # (1, C, T) -> (T, C)
                 label = label_resampled.permute(0, 2, 1).squeeze(0)
                 
-            return features, label, lab_id, subject_id
+            return features, label, lab_id, subject_id, sample_info['video_id']
             
-        return features, lab_id, subject_id
+        return features, lab_id, subject_id, sample_info['video_id']

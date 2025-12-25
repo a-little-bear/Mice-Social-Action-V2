@@ -2,11 +2,12 @@ experiment_name: "Advanced_HHSTF_Maxed"
 
 seed: 42
 debug: false
+test: true
 
 data:
   data_dir: "data/"
-  batch_size: 1024
-  num_workers: 8
+  batch_size: 4096
+  num_workers: 4
   window_size: 512
   preload: true
   pin_memory: true

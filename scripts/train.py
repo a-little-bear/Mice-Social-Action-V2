@@ -15,7 +15,7 @@ from src.postprocessing.optimization import PostProcessor
 from src.training.trainer import Trainer
 
 def collate_fn(batch):
-    features, labels, lab_ids, subject_ids = zip(*batch)
+    features, labels, lab_ids, subject_ids, video_ids = zip(*batch)
     lengths = [f.shape[0] for f in features]
     max_len = max(lengths)
     feat_dim = features[0].shape[1]
@@ -33,7 +33,7 @@ def collate_fn(batch):
              padded_features[i, :end] = f
         padded_labels[i, :end] = l
         
-    return padded_features, padded_labels, lab_ids, subject_ids
+    return padded_features, padded_labels, lab_ids, subject_ids, video_ids
 
 def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=None, num_classes=None):
     print(f"Initializing model for {'Fold ' + str(fold_idx) if fold_idx is not None else 'Single Run'}...")
@@ -48,11 +48,14 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     model = model.to(device)
 
     # Optimization: torch.compile
-    try:
-        print("Compiling model with torch.compile...")
-        model = torch.compile(model, mode="max-autotune")
-    except Exception as e:
-        print(f"Compilation failed, fallback to eager mode: {e}")
+    if not config.get('test', False):
+        try:
+            print("Compiling model with torch.compile...")
+            model = torch.compile(model, mode="max-autotune")
+        except Exception as e:
+            print(f"Compilation failed, fallback to eager mode: {e}")
+    else:
+        print("Skipping torch.compile in TEST MODE.")
     
     post_processor = PostProcessor(config['post_processing'])
     
@@ -91,6 +94,17 @@ def train():
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
 
+    if config.get('test', False):
+        print("!!! TEST MODE ENABLED !!!")
+        config['data']['data_dir'] = 'test_data/'
+        config['data']['batch_size'] = 2
+        config['data']['num_workers'] = 0
+        config['data']['preload'] = True
+        config['training']['epochs'] = 2
+        if config.get('cross_validation', {}).get('enabled', False):
+            config['cross_validation']['n_folds'] = 2
+        print(f"Overriding config for testing: data_dir={config['data']['data_dir']}, epochs={config['training']['epochs']}")
+
     print(f"Starting Experiment: {config['experiment_name']}")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
@@ -99,6 +113,10 @@ def train():
     # For CV, we use the 'train' mode dataset as the full pool
     full_dataset = MABeDataset(config['data']['data_dir'], config, mode='train')
     
+    if len(full_dataset) == 0:
+        print(f"ERROR: No data found in {config['data']['data_dir']}. Please check your data path.")
+        return
+
     # Calculate dims once
     num_mice = 2
     if config['data']['preprocessing'].get('unify_body_parts', False):
