@@ -49,7 +49,7 @@ class Trainer:
         total_loss = 0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         for batch in pbar:
-            features, labels, lab_ids, subject_ids = batch
+            features, labels, lab_ids, subject_ids, video_ids = batch
             
             features = features.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
