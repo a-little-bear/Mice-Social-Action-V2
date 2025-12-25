@@ -412,18 +412,19 @@ class Trainer:
             # If tie breaking is 'none', we still need to apply thresholds if they exist
             if self.config['post_processing'].get('tie_breaking', 'none') == 'none':
                 print("[Post-Processing] Applying thresholds...")
-                final_preds = np.zeros_like(flat_probs)
+                final_preds = np.zeros(flat_probs.shape, dtype=np.uint8)
                 unique_labs = np.unique(flat_lab_ids)
                 for lab in unique_labs:
                     lab_mask = (flat_lab_ids == lab)
                     if lab in self.post_processor.thresholds:
                         thresh = self.post_processor.thresholds[lab]
-                        final_preds[lab_mask] = (flat_probs[lab_mask] > thresh).astype(float)
+                        final_preds[lab_mask] = (flat_probs[lab_mask] > thresh).astype(np.uint8)
                     else:
-                        final_preds[lab_mask] = (flat_probs[lab_mask] > 0.5).astype(float)
+                        final_preds[lab_mask] = (flat_probs[lab_mask] > 0.5).astype(np.uint8)
 
-            # 3. Gap Filling
-            final_preds = self.post_processor.fill_gaps(final_preds)
+            # 3. Gap Filling (Skip in flattened validation to save time/memory and avoid logic error)
+            # Gap filling should only be done on continuous time series, not flattened windows.
+            # final_preds = self.post_processor.fill_gaps(final_preds)
 
             # 4. Compute F1
             print("[Post-Processing] Computing final F1 scores...")

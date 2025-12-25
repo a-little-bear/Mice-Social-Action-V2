@@ -93,7 +93,7 @@ class PostProcessor:
             return predictions
             
         print(f"Applying tie-breaking (method: {method})...")
-        final_preds = np.zeros_like(predictions)
+        final_preds = np.zeros(predictions.shape, dtype=np.uint8)
         unique_labs = np.unique(lab_ids)
         
         for lab in unique_labs:
@@ -109,16 +109,12 @@ class PostProcessor:
             
             if method == 'argmax':
                 # Just take the max prob among those above threshold
-                # If none above threshold, all 0
-                # If multiple, max prob wins
-                # We can implement this by zeroing out below threshold and taking argmax
                 masked_probs = lab_probs * above_thresh
                 max_indices = np.argmax(masked_probs, axis=1)
-                # Check if row has any valid prediction
                 has_pred = above_thresh.any(axis=1)
                 
-                # Create one-hot
-                lab_final = np.zeros_like(lab_probs)
+                # Create one-hot (using uint8)
+                lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
                 lab_final[np.arange(len(lab_probs)), max_indices] = 1
                 lab_final[~has_pred] = 0
                 
@@ -126,19 +122,18 @@ class PostProcessor:
                 
             elif method == 'z_score':
                 sigmas = self.sigmas.get(lab, np.ones_like(thresholds))
-                # Avoid div by zero
                 sigmas = np.maximum(sigmas, 1e-6)
                 
                 z_scores = (lab_probs - thresholds) / sigmas
                 
-                # Only consider those above threshold (z_score > 0)
-                masked_z = z_scores * above_thresh
+                # Only consider those above threshold
+                masked_z = z_scores.copy()
                 masked_z[~above_thresh] = -np.inf
                 
                 max_indices = np.argmax(masked_z, axis=1)
                 has_pred = above_thresh.any(axis=1)
                 
-                lab_final = np.zeros_like(lab_probs)
+                lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
                 lab_final[np.arange(len(lab_probs)), max_indices] = 1
                 lab_final[~has_pred] = 0
                 
