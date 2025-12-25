@@ -1,5 +1,6 @@
 import numpy as np
-from scipy.signal import medfilt, lfilter
+from scipy.signal import lfilter
+from scipy.ndimage import binary_closing, median_filter, binary_opening
 from sklearn.metrics import f1_score
 
 class PostProcessor:
@@ -52,27 +53,21 @@ class PostProcessor:
                 print(f"Lab {lab} thresholds optimized (no positives).")
                 continue
 
-            # Vectorized F1 calculation for all classes
-            # [N_lab, C, 1]
-            p_expanded = lab_preds[:, :, None]
-            # [1, 1, K]
-            th_expanded = threshold_range[None, None, :]
-            
-            # [N_lab, C, K]
-            preds_bool = p_expanded > th_expanded
-            
-            # [N_lab, C, 1]
-            t_expanded = lab_targets[:, :, None]
-            
-            # Sum over samples (axis 0) -> [C, K]
-            tp = (preds_bool & t_expanded).sum(axis=0)
-            fp = (preds_bool & ~t_expanded).sum(axis=0)
-            fn = (~preds_bool & t_expanded).sum(axis=0)
-            
-            denom = 2 * tp + fp + fn
-            
+            # Memory-efficient F1 calculation: loop over thresholds instead of expanding memory
             # [C, K]
-            f1_scores = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+            f1_scores = np.zeros((num_classes, len(threshold_range)))
+            
+            for i, th in enumerate(threshold_range):
+                # [N_lab, C]
+                preds_bool = lab_preds > th
+                
+                # Sum over samples (axis 0) -> [C]
+                tp = (preds_bool & lab_targets).sum(axis=0)
+                fp = (preds_bool & ~lab_targets).sum(axis=0)
+                fn = (~preds_bool & lab_targets).sum(axis=0)
+                
+                denom = 2 * tp + fp + fn
+                f1_scores[:, i] = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
             
             # Best index per class: [C]
             best_indices = np.argmax(f1_scores, axis=1)
@@ -175,11 +170,13 @@ class PostProcessor:
             
             # Update kernel with correct window size
             if predictions.ndim == 2:
-                kernel = [window_size, 1]
+                # [T, C]
+                size = (window_size, 1)
             else:
-                kernel = [1, window_size, 1]
+                # [N, T, C]
+                size = (1, window_size, 1)
                 
-            return medfilt(predictions, kernel_size=kernel)
+            return median_filter(predictions, size=size)
             
         elif method == 'ema':
             alpha = self.config['smoothing']['alpha']
@@ -201,46 +198,34 @@ class PostProcessor:
 
     def fill_gaps(self, predictions):
         """
-        Fill short gaps in binary predictions.
+        Fill short gaps and remove short bursts in binary predictions.
         predictions: [T, C] binary
         """
-        max_gap = self.config.get('gap_filling', {}).get('max_gap', 0)
-        if max_gap <= 0:
+        gap_config = self.config.get('gap_filling', {})
+        max_gap = gap_config.get('max_gap', 0)
+        min_duration = gap_config.get('min_duration', 0)
+        
+        if max_gap <= 0 and min_duration <= 0:
             return predictions
             
-        filled_preds = predictions.copy()
         T, C = predictions.shape
+        # Pad with 1s to fill boundary gaps
+        padded = np.ones((T + 2, C), dtype=predictions.dtype)
+        padded[1:-1, :] = predictions
         
-        for c in range(C):
-            # Find runs of 0s
-            binary = predictions[:, c]
-            padded = np.concatenate(([1], binary, [1]))
-            diff = np.diff(padded)
-            starts = np.where(diff == -1)[0]
-            ends = np.where(diff == 1)[0]
+        filled = padded
+        
+        # 1. Fill gaps (0s between 1s) -> binary_closing
+        if max_gap > 0:
+            structure = np.ones((max_gap + 1, 1))
+            filled = binary_closing(filled, structure=structure)
             
-            for s, e in zip(starts, ends):
-                length = e - s
-                if length <= max_gap:
-                    filled_preds[s:e, c] = 1
-                    
-        return filled_preds
-
-        min_duration = self.config['gap_filling']['min_duration']
+        # 2. Remove short bursts (1s between 0s) -> binary_opening
+        if min_duration > 0:
+            structure = np.ones((min_duration, 1))
+            filled = binary_opening(filled, structure=structure)
         
-        # Simple morphological closing-like operation or iteration
-        # For simplicity, iterating
-        T, C = predictions.shape
-        filled = predictions.copy()
-        
-        for c in range(C):
-            # Fill gaps
-            # Find 0s between 1s with length <= max_gap
-            # This is a simplified logic. 
-            # In production, use scipy.ndimage.binary_closing
-            pass # Placeholder for complex logic, keeping simple for now
-            
-        return filled
+        return filled[1:-1, :].astype(predictions.dtype)
 
     def apply_z_score_tie_breaking(self, probs, thresholds, oof_stats):
         """

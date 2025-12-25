@@ -197,7 +197,8 @@ class Trainer:
             self.post_processor = post_processor
 
         self.model.eval()
-        lab_stats = defaultdict(lambda: defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0}))
+        # lab_stats will store [C, 3] arrays where 3 is (tp, fp, fn)
+        lab_stats = defaultdict(lambda: None)
         
         all_probs = []
         all_targets = []
@@ -306,10 +307,12 @@ class Trainer:
                         fn = ((1 - p_flat) * t_flat).sum(axis=0)
                         
                         # Update stats
-                        for c in range(C):
-                            lab_stats[lab][c]['tp'] += int(tp[c])
-                            lab_stats[lab][c]['fp'] += int(fp[c])
-                            lab_stats[lab][c]['fn'] += int(fn[c])
+                        if lab_stats[lab] is None:
+                            lab_stats[lab] = np.zeros((C, 3), dtype=np.int64)
+                        
+                        lab_stats[lab][:, 0] += tp.astype(np.int64)
+                        lab_stats[lab][:, 1] += fp.astype(np.int64)
+                        lab_stats[lab][:, 2] += fn.astype(np.int64)
 
         if collect_all:
             # Concatenate
@@ -362,7 +365,10 @@ class Trainer:
                     else:
                         final_preds[lab_mask] = (flat_probs[lab_mask] > 0.5).astype(float)
 
-            # 3. Compute F1
+            # 3. Gap Filling
+            final_preds = self.post_processor.fill_gaps(final_preds)
+
+            # 4. Compute F1
             # Re-aggregate by lab
             unique_labs = np.unique(flat_lab_ids)
             lab_scores = []
@@ -372,11 +378,9 @@ class Trainer:
                 lab_p = final_preds[lab_mask]
                 lab_t = flat_targets[lab_mask]
                 
-                action_f1s = []
-                for c in range(C):
-                    f1 = f1_score(lab_t[:, c], lab_p[:, c], zero_division=0.0)
-                    action_f1s.append(f1)
-                lab_scores.append(np.mean(action_f1s))
+                # Vectorized F1 for all classes
+                f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
+                lab_scores.append(np.mean(f1s))
                 
             final_f1 = np.mean(lab_scores) if lab_scores else 0.0
             
@@ -384,19 +388,16 @@ class Trainer:
 
         # Compute F1 from accumulated stats (Incremental Mode)
         lab_scores = []
-        for lab, class_stats in lab_stats.items():
-            action_f1s = []
-            for c, stats in class_stats.items():
-                tp = stats['tp']
-                fp = stats['fp']
-                fn = stats['fn']
-                if (2 * tp + fp + fn) == 0:
-                    f1 = 0.0
-                else:
-                    f1 = (2 * tp) / (2 * tp + fp + fn)
-                action_f1s.append(f1)
-            if action_f1s:
-                lab_scores.append(np.mean(action_f1s))
+        for lab, stats in lab_stats.items():
+            if stats is None:
+                continue
+            tp = stats[:, 0]
+            fp = stats[:, 1]
+            fn = stats[:, 2]
+            denom = 2 * tp + fp + fn
+            # Vectorized F1 for all classes in this lab
+            f1s = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom != 0)
+            lab_scores.append(np.mean(f1s))
         
         final_f1 = np.mean(lab_scores) if lab_scores else 0.0
         
