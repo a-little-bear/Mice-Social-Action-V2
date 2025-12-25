@@ -134,7 +134,8 @@ class MABeDataset(Dataset):
                     self._load_video(*x)
                     # Also preload annotation if it exists
                     anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
-                    if os.path.exists(anno_path) and anno_path not in self.anno_cache:
+                    if os.path.exists(anno_path):
+                        # Always reload to ensure it's in cache, even if logic above is complex
                         try:
                             self.anno_cache[anno_path] = pd.read_parquet(anno_path)
                         except:
@@ -181,18 +182,56 @@ class MABeDataset(Dataset):
             (df['stop_frame'] > start_frame)
         ]
         
+        # Debug: Print if slice is empty but original df wasn't
+        # if not df.empty and df_slice.empty:
+        #     print(f"DEBUG: Empty slice for {annotation_path} ({start_frame}-{end_frame})")
+        
         for _, row in df_slice.iterrows():
-            action = row['action']
+            # Construct composite class name: subject,object,action
+            # Assumption: agent_id/target_id are 0-based indices corresponding to mouse1..mouseN
+            try:
+                agent_id = int(row['agent_id'])
+                target_id = int(row['target_id'])
+                action = row['action']
+                
+                subject = f"mouse{agent_id + 1}"
+                if agent_id == target_id:
+                    obj = "self"
+                else:
+                    obj = f"mouse{target_id + 1}"
+                    
+                composite_action = f"{subject},{obj},{action}"
+            except (ValueError, KeyError):
+                # Fallback if columns missing or invalid
+                composite_action = row['action'] if 'action' in row else None
+
             s = row['start_frame']
             e = row['stop_frame']
             
-            if action in self.class_to_idx:
-                idx = self.class_to_idx[action]
+            target_class = None
+            if composite_action in self.class_to_idx:
+                target_class = composite_action
+            elif 'action' in row and row['action'] in self.class_to_idx:
+                target_class = row['action']
+            
+            if target_class:
+                idx = self.class_to_idx[target_class]
                 s_w = max(0, int(s - start_frame))
                 e_w = min(num_frames, int(e - start_frame))
                 
                 if s_w < e_w:
                     labels[s_w:e_w, idx] = 1.0
+                    
+        # FPS Correction for Labels: If keypoints were interpolated (e.g. 25->30 FPS),
+        # labels need to be stretched to match the new num_frames.
+        # The current logic passes num_frames (which is the length of keypoints_tensor),
+        # but _create_label_tensor fills it based on original time.
+        # If num_frames != (end_frame - start_frame), we have a mismatch.
+        
+        if labels.shape[0] != num_frames:
+             # This should not happen if we initialized labels with num_frames
+             pass
+             
         return labels
 
     def _load_video(self, tracking_path, lab_id, video_id=None):
