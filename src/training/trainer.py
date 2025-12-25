@@ -80,6 +80,9 @@ class Trainer:
             keypoints = keypoints.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
             
+            # Handle NaNs for target generation to avoid issues in compiled kernels
+            labels_fixed = torch.nan_to_num(labels, nan=0.0)
+            
             if first_batch:
                 print(f"\n[DEBUG Epoch {epoch} Batch 0]")
                 print(f"  Labels Shape: {labels.shape}")
@@ -132,9 +135,6 @@ class Trainer:
 
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = self.model(features, lab_ids, subject_ids)
-                
-                # Handle NaNs for target generation to avoid issues in compiled kernels
-                labels_fixed = torch.nan_to_num(labels, nan=0.0)
                 
                 # Compute mask early
                 mask = None
