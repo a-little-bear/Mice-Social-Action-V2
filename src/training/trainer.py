@@ -374,7 +374,7 @@ class Trainer:
                 
                 action_f1s = []
                 for c in range(C):
-                    f1 = f1_score(lab_t[:, c], lab_p[:, c])
+                    f1 = f1_score(lab_t[:, c], lab_p[:, c], zero_division=0.0)
                     action_f1s.append(f1)
                 lab_scores.append(np.mean(action_f1s))
                 

@@ -30,42 +30,60 @@ class PostProcessor:
         
         for lab in unique_labs:
             lab_mask = (lab_ids == lab)
+            # [N_lab, C]
             lab_preds = predictions[lab_mask]
-            lab_targets = targets[lab_mask]
+            lab_targets = targets[lab_mask] > 0.5
             
-            best_thresh_per_class = []
-            sigmas_per_class = []
-            
-            for c in range(num_classes):
-                # Calculate sigma for Z-score
-                sigmas_per_class.append(np.std(lab_preds[:, c]))
+            # Calculate sigmas for all classes at once
+            # [C]
+            sigmas_per_class = np.std(lab_preds, axis=0)
+            self.sigmas[lab] = sigmas_per_class
 
-                p = lab_preds[:, c]
-                t = lab_targets[:, c] > 0.5 # Ensure boolean
-                
-                # If no positive samples, skip or set default
-                if t.sum() == 0:
-                    best_thresh_per_class.append(0.5)
-                    continue
-                
-                # Vectorized F1 calculation
-                # [N, 1] > [1, K] -> [N, K]
-                preds_bool = p[:, None] > threshold_range[None, :]
-                t_expanded = t[:, None]
-                
-                tp = (preds_bool & t_expanded).sum(axis=0)
-                fp = (preds_bool & ~t_expanded).sum(axis=0)
-                fn = (~preds_bool & t_expanded).sum(axis=0)
-                
-                denom = 2 * tp + fp + fn
-                # Avoid division by zero
-                f1_scores = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
-                
-                best_idx = np.argmax(f1_scores)
-                best_thresh_per_class.append(threshold_range[best_idx])
+            # Check for positive samples per class
+            # [C]
+            has_positives = lab_targets.sum(axis=0) > 0
             
-            self.thresholds[lab] = np.array(best_thresh_per_class)
-            self.sigmas[lab] = np.array(sigmas_per_class)
+            # Prepare output thresholds (default 0.5)
+            best_thresh_per_class = np.full(num_classes, 0.5)
+            
+            # Only process classes with positives
+            if not np.any(has_positives):
+                self.thresholds[lab] = best_thresh_per_class
+                print(f"Lab {lab} thresholds optimized (no positives).")
+                continue
+
+            # Vectorized F1 calculation for all classes
+            # [N_lab, C, 1]
+            p_expanded = lab_preds[:, :, None]
+            # [1, 1, K]
+            th_expanded = threshold_range[None, None, :]
+            
+            # [N_lab, C, K]
+            preds_bool = p_expanded > th_expanded
+            
+            # [N_lab, C, 1]
+            t_expanded = lab_targets[:, :, None]
+            
+            # Sum over samples (axis 0) -> [C, K]
+            tp = (preds_bool & t_expanded).sum(axis=0)
+            fp = (preds_bool & ~t_expanded).sum(axis=0)
+            fn = (~preds_bool & t_expanded).sum(axis=0)
+            
+            denom = 2 * tp + fp + fn
+            
+            # [C, K]
+            f1_scores = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+            
+            # Best index per class: [C]
+            best_indices = np.argmax(f1_scores, axis=1)
+            
+            # Map indices to thresholds
+            optimized_thresholds = threshold_range[best_indices]
+            
+            # Restore default 0.5 for classes with no positives
+            optimized_thresholds[~has_positives] = 0.5
+            
+            self.thresholds[lab] = optimized_thresholds
             print(f"Lab {lab} thresholds optimized.")
 
     def apply_tie_breaking(self, predictions, lab_ids):
