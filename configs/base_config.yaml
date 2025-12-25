@@ -9,13 +9,13 @@ test: false
 data:
   data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 1024
-  num_workers: 8 # Reduced to 8 to save memory
+  num_workers: 4 # Further reduced to 4 to ensure stability
   window_size: 512
   preload: false # MUST be false. 105GB dataset + 110GB RAM is too tight for preload.
   pin_memory: true
-  prefetch_factor: 2 # Reduced to 2 to limit data in flight
+  prefetch_factor: 2
   persistent_workers: true
-  cache_size: 8 # Reduced to 8. Each worker will cache 8 videos locally.
+  cache_size: 4 # Each worker caches only 4 videos.
   
   sampling:
     strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
@@ -81,8 +81,7 @@ training:
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
   loss_type: "focal" # Options: "focal" (Class Imbalance), "ce" (Cross Entropy)
   mask_unlabeled: true
-  save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
-
+  save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics  torch_compile: false # Disable to save memory during startup
 cross_validation:
   enabled: true
   n_folds: 5
