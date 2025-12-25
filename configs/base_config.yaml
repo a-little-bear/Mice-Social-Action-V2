@@ -18,8 +18,8 @@ data:
   cache_size: 8 # Ignored when preload is true.
   
   sampling:
-    strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
-    bias_factor: 0.6
+    strategy: "action_rich" # Options: "uniform", "action_rich" (oversample rare classes)
+    bias_factor: 20.0
 
   preprocessing:
     target_fps: 30
@@ -79,7 +79,8 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
-  loss_type: "focal" # Options: "focal" (Class Imbalance), "ce" (Cross Entropy)
+  loss_type: "bce" # Options: "focal" (Class Imbalance), "ce" (Cross Entropy), "bce"
+  pos_weight: 10.0 # Weight for positive class in BCE
   mask_unlabeled: true
   save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
   torch_compile: false # Disable to save memory during startup and avoid compilation overhead

@@ -44,6 +44,14 @@ class Trainer:
             self.criterion = FocalLoss(reduction='none')
         elif loss_type == 'soft_f1':
             self.criterion = MacroSoftF1Loss(num_classes=37)
+        elif loss_type == 'bce':
+            pos_weight_val = float(config['training'].get('pos_weight', 1.0))
+            # Create a tensor for pos_weight to broadcast correctly
+            # We don't know num_classes here easily without passing it, but BCE handles scalar broadcasting usually?
+            # Actually BCEWithLogitsLoss pos_weight must be a vector of length num_classes or broadcastable.
+            # If we pass a scalar tensor, it broadcasts.
+            pos_weight = torch.tensor(pos_weight_val, device=device)
+            self.criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight)
         else:
             self.criterion = nn.BCEWithLogitsLoss(reduction='none')
         
