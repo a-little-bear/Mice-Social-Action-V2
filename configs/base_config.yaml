@@ -4,16 +4,18 @@ seed: 42
 debug: false
 test: false
 
+# Path Settings
+# For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
-  data_dir: "data/"
+  data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 1024
-  num_workers: 12
+  num_workers: 16
   window_size: 512
   preload: false
   pin_memory: true
   prefetch_factor: 4
   persistent_workers: true
-  cache_size: 32
+  cache_size: 256
   
   sampling:
     strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
@@ -79,7 +81,7 @@ training:
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
   loss_type: "focal" # Options: "focal" (Class Imbalance), "ce" (Cross Entropy)
   mask_unlabeled: true
-  save_dir: "checkpoints/"
+  save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
 
 cross_validation:
   enabled: true

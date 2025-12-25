@@ -5,6 +5,7 @@ import sys
 import numpy as np
 import gc
 import atexit
+import argparse
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
@@ -114,13 +115,26 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
             torch.cuda.empty_cache()
 
 def train():
+    parser = argparse.ArgumentParser(description="Train MABe Mouse Behavior Detection Model")
+    parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="Path to config file")
+    parser.add_argument("--data_dir", type=str, help="Override data directory")
+    parser.add_argument("--save_dir", type=str, help="Override save directory")
+    args = parser.parse_args()
+
     # 1. Load Config
-    config_path = 'configs/base_config.yaml'
+    config_path = args.config
     if not os.path.exists(config_path):
-        config_path = 'configs/base_config.yaml'
+        print(f"Error: Config file {config_path} not found.")
+        return
         
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+
+    # Override from CLI if provided
+    if args.data_dir:
+        config['data']['data_dir'] = args.data_dir
+    if args.save_dir:
+        config['training']['save_dir'] = args.save_dir
 
     if config.get('test', False):
         print("!!! TEST MODE ENABLED !!!")

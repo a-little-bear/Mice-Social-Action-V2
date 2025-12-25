@@ -30,6 +30,7 @@ class MABeDataset(Dataset):
         self.data = []
         self.labels = []
         self.video_cache = {}
+        self.anno_cache = {} # Cache for annotations
         self.cache_size = config['data'].get('cache_size', 128)
         self.preload = config['data'].get('preload', False)
         
@@ -129,10 +130,20 @@ class MABeDataset(Dataset):
             # 22 cores available, using 16 workers to leave some for system/other tasks
             max_workers = min(len(video_list), 16)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                list(tqdm(executor.map(lambda x: self._load_video(*x), video_list), 
-                          total=len(video_list), desc="Preloading Videos"))
+                def _preload_task(x):
+                    self._load_video(*x)
+                    # Also preload annotation if it exists
+                    anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
+                    if os.path.exists(anno_path) and anno_path not in self.anno_cache:
+                        try:
+                            self.anno_cache[anno_path] = pd.read_parquet(anno_path)
+                        except:
+                            pass
+                
+                list(tqdm(executor.map(_preload_task, video_list), 
+                          total=len(video_list), desc="Preloading Videos & Annotations"))
             
-            print(f"Preloaded {len(self.video_cache)} videos into RAM.")
+            print(f"Preloaded {len(self.video_cache)} videos and {len(self.anno_cache)} annotations into RAM.")
 
         if mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich':
             self.sampler = ActionRichSampler(self.labels, window_size=512, bias_factor=config['data']['sampling']['bias_factor'])
@@ -147,18 +158,24 @@ class MABeDataset(Dataset):
         if not os.path.exists(annotation_path):
             return labels
             
-        try:
-            df = pd.read_parquet(annotation_path)
-        except:
-            return labels
+        if annotation_path in self.anno_cache:
+            df = self.anno_cache[annotation_path]
+        else:
+            try:
+                df = pd.read_parquet(annotation_path)
+                if not self.preload and len(self.anno_cache) > self.cache_size:
+                    self.anno_cache.pop(next(iter(self.anno_cache)))
+                self.anno_cache[annotation_path] = df
+            except:
+                return labels
             
         # Filter
-        df = df[
+        df_slice = df[
             (df['start_frame'] < end_frame) & 
             (df['stop_frame'] > start_frame)
         ]
         
-        for _, row in df.iterrows():
+        for _, row in df_slice.iterrows():
             action = row['action']
             s = row['start_frame']
             e = row['stop_frame']
@@ -233,7 +250,7 @@ class MABeDataset(Dataset):
 
             if not self.preload and len(self.video_cache) > self.cache_size:
                 self.video_cache.pop(next(iter(self.video_cache)))
-            self.video_cache[tracking_path] = keypoints
+            self.video_cache[cache_key] = keypoints
             
             return keypoints
         except Exception as e:
