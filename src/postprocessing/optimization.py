@@ -134,35 +134,48 @@ class PostProcessor:
     def apply_smoothing(self, predictions):
         """
         Apply temporal smoothing (EMA or Median).
-        predictions: [T, C]
+        predictions: [T, C] or [N, T, C]
         """
         method = self.config.get('smoothing', {}).get('method', 'none')
         
         if method == 'none':
             return predictions
             
+        # Determine time axis
+        if predictions.ndim == 2:
+            # [T, C]
+            time_axis = 0
+        elif predictions.ndim == 3:
+            # [N, T, C]
+            time_axis = 1
+        else:
+            return predictions
+
         if method == 'median_filter':
             window_size = self.config['smoothing']['window_size']
-            # Ensure window_size is odd
-            if window_size % 2 == 0:
-                window_size += 1
-            # Apply median filter along time dimension (axis 0)
-            # kernel_size must be odd
-            return medfilt(predictions, kernel_size=[window_size, 1])
+            if window_size % 2 == 0: window_size += 1
+            
+            # Update kernel with correct window size
+            if predictions.ndim == 2:
+                kernel = [window_size, 1]
+            else:
+                kernel = [1, window_size, 1]
+                
+            return medfilt(predictions, kernel_size=kernel)
             
         elif method == 'ema':
             alpha = self.config['smoothing']['alpha']
-            # EMA is IIR filter: y[t] = alpha*x[t] + (1-alpha)*y[t-1]
-            # Transfer function: H(z) = alpha / (1 - (1-alpha)z^-1)
             b = [alpha]
             a = [1, -(1-alpha)]
             
-            # Forward pass
-            smoothed = lfilter(b, a, predictions, axis=0)
+            # Forward
+            smoothed = lfilter(b, a, predictions, axis=time_axis)
             
-            # Backward pass (Bidirectional smoothing)
-            # Flip, filter, flip back
-            smoothed_back = lfilter(b, a, predictions[::-1], axis=0)[::-1]
+            # Backward
+            # Flip along time axis
+            predictions_flipped = np.flip(predictions, axis=time_axis)
+            smoothed_back = lfilter(b, a, predictions_flipped, axis=time_axis)
+            smoothed_back = np.flip(smoothed_back, axis=time_axis)
             
             return (smoothed + smoothed_back) / 2.0
         

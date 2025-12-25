@@ -318,9 +318,8 @@ class Trainer:
             
             # Apply Smoothing per window (valid even if shuffled)
             if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
-                N_batches, T_seq, C_cls = full_probs.shape
-                for i in range(N_batches):
-                    full_probs[i] = self.post_processor.apply_smoothing(full_probs[i])
+                # Pass the whole batch [N, T, C]
+                full_probs = self.post_processor.apply_smoothing(full_probs)
             
             # Flatten for processing: [N*T, C]
             N, T, C = full_probs.shape
