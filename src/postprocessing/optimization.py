@@ -40,27 +40,33 @@ class PostProcessor:
                 # Calculate sigma for Z-score
                 sigmas_per_class.append(np.std(lab_preds[:, c]))
 
-                best_f1 = -1
-                best_th = 0.5
+                p = lab_preds[:, c]
+                t = lab_targets[:, c] > 0.5 # Ensure boolean
                 
                 # If no positive samples, skip or set default
-                if np.sum(lab_targets[:, c]) == 0:
+                if t.sum() == 0:
                     best_thresh_per_class.append(0.5)
                     continue
                 
-                for th in threshold_range:
-                    binary_preds = (lab_preds[:, c] > th).astype(int)
-                    f1 = f1_score(lab_targets[:, c], binary_preds)
-                    
-                    if f1 > best_f1:
-                        best_f1 = f1
-                        best_th = th
+                # Vectorized F1 calculation
+                # [N, 1] > [1, K] -> [N, K]
+                preds_bool = p[:, None] > threshold_range[None, :]
+                t_expanded = t[:, None]
                 
-                best_thresh_per_class.append(best_th)
+                tp = (preds_bool & t_expanded).sum(axis=0)
+                fp = (preds_bool & ~t_expanded).sum(axis=0)
+                fn = (~preds_bool & t_expanded).sum(axis=0)
+                
+                denom = 2 * tp + fp + fn
+                # Avoid division by zero
+                f1_scores = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+                
+                best_idx = np.argmax(f1_scores)
+                best_thresh_per_class.append(threshold_range[best_idx])
             
             self.thresholds[lab] = np.array(best_thresh_per_class)
             self.sigmas[lab] = np.array(sigmas_per_class)
-            print(f"Lab {lab} thresholds: {best_thresh_per_class}")
+            print(f"Lab {lab} thresholds optimized.")
 
     def apply_tie_breaking(self, predictions, lab_ids):
         """
