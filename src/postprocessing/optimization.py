@@ -91,6 +91,7 @@ class PostProcessor:
         if method == 'none':
             return predictions
             
+        print(f"Applying tie-breaking (method: {method})...")
         final_preds = np.zeros_like(predictions)
         unique_labs = np.unique(lab_ids)
         
@@ -154,6 +155,7 @@ class PostProcessor:
         if method == 'none':
             return predictions
             
+        print(f"Applying temporal smoothing (method: {method})...")
         # Determine time axis
         if predictions.ndim == 2:
             # [T, C]
@@ -208,6 +210,7 @@ class PostProcessor:
         if max_gap <= 0 and min_duration <= 0:
             return predictions
             
+        print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration})...")
         T, C = predictions.shape
         # Pad with 1s to fill boundary gaps
         padded = np.ones((T + 2, C), dtype=predictions.dtype)

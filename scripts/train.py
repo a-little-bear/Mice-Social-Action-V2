@@ -6,7 +6,7 @@ import numpy as np
 import gc
 import atexit
 import argparse
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, GroupKFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
 def cleanup():
@@ -171,15 +171,18 @@ def train():
     
     if cv_config.get('enabled', False):
         n_folds = cv_config.get('n_folds', 5)
-        print(f"Starting {n_folds}-Fold Cross Validation...")
+        print(f"Starting {n_folds}-Fold Group Cross Validation (Grouped by Video ID)...")
         
-        kfold = KFold(n_splits=n_folds, shuffle=True, random_state=config['seed'])
+        # Use GroupKFold to prevent data leakage between windows of the same video
+        kfold = GroupKFold(n_splits=n_folds)
         cv_scores = []
         
-        # KFold expects indices or length
+        # Extract video_ids for grouping
+        # full_dataset.data is a list of dicts, each has 'video_id'
+        groups = [d['video_id'] for d in full_dataset.data]
         indices = np.arange(len(full_dataset))
         
-        for fold, (train_ids, val_ids) in enumerate(kfold.split(indices)):
+        for fold, (train_ids, val_ids) in enumerate(kfold.split(indices, groups=groups)):
             print(f"\n=== FOLD {fold} ===")
             
             train_loader = None

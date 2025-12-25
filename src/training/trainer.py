@@ -41,6 +41,8 @@ class Trainer:
         )
         
         loss_type = config['training']['loss_type']
+        num_classes = config['model']['classifier']['num_classes']
+        
         if loss_type == 'softmax':
             self.criterion = nn.CrossEntropyLoss(reduction='none')
         elif loss_type == 'focal':
@@ -48,9 +50,9 @@ class Trainer:
             pos_weight = torch.tensor(pos_weight_val, device=device)
             self.criterion = FocalLoss(reduction='none', pos_weight=pos_weight)
         elif loss_type == 'soft_f1':
-            self.criterion = MacroSoftF1Loss(num_classes=37)
+            self.criterion = MacroSoftF1Loss(num_classes=num_classes)
         elif loss_type == 'macro_soft_f1':
-            self.criterion = MacroSoftF1Loss(num_classes=37)
+            self.criterion = MacroSoftF1Loss(num_classes=num_classes)
         elif loss_type == 'ohem':
             rate = config['training'].get('ohem_percent', 0.7)
             self.criterion = OHEMLoss(rate=rate)
@@ -316,12 +318,12 @@ class Trainer:
 
         if collect_all:
             # Concatenate
+            print("\n[Post-Processing] Collecting and concatenating predictions...")
             full_probs = torch.cat(all_probs, dim=0).numpy() # [N, T, C]
             full_targets = torch.cat(all_targets, dim=0).numpy() # [N, T, C]
             
             # Apply Smoothing per window (valid even if shuffled)
             if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
-                # Pass the whole batch [N, T, C]
                 full_probs = self.post_processor.apply_smoothing(full_probs)
             
             # Flatten for processing: [N*T, C]
@@ -336,10 +338,10 @@ class Trainer:
                 full_lab_ids = np.array(all_lab_ids)
             
             # Expand lab_ids to match flattened shape
-            # full_lab_ids is [N], we need [N*T]
             flat_lab_ids = np.repeat(full_lab_ids, T)
             
             # Mask invalid frames
+            print("[Post-Processing] Masking invalid frames...")
             valid_mask = ~np.isnan(flat_targets).any(axis=-1)
             
             flat_probs = flat_probs[valid_mask]
@@ -355,6 +357,7 @@ class Trainer:
             
             # If tie breaking is 'none', we still need to apply thresholds if they exist
             if self.config['post_processing'].get('tie_breaking', 'none') == 'none':
+                print("[Post-Processing] Applying thresholds...")
                 final_preds = np.zeros_like(flat_probs)
                 unique_labs = np.unique(flat_lab_ids)
                 for lab in unique_labs:
@@ -369,6 +372,7 @@ class Trainer:
             final_preds = self.post_processor.fill_gaps(final_preds)
 
             # 4. Compute F1
+            print("[Post-Processing] Computing final F1 scores...")
             # Re-aggregate by lab
             unique_labs = np.unique(flat_lab_ids)
             lab_scores = []

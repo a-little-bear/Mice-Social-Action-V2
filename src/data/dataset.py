@@ -159,6 +159,12 @@ class MABeDataset(Dataset):
         if not os.path.exists(annotation_path):
             return labels
             
+        # Calculate scale factor to align labels with FPS-corrected keypoints
+        # original_len = end_frame - start_frame
+        # scale = num_frames / original_len
+        original_len = end_frame - start_frame
+        scale = num_frames / original_len if original_len > 0 else 1.0
+        
         if annotation_path in self.anno_cache:
             df = self.anno_cache[annotation_path]
         else:
@@ -182,13 +188,8 @@ class MABeDataset(Dataset):
             (df['stop_frame'] > start_frame)
         ]
         
-        # Debug: Print if slice is empty but original df wasn't
-        # if not df.empty and df_slice.empty:
-        #     print(f"DEBUG: Empty slice for {annotation_path} ({start_frame}-{end_frame})")
-        
         for _, row in df_slice.iterrows():
             # Construct composite class name: subject,object,action
-            # Assumption: agent_id/target_id are 0-based indices corresponding to mouse1..mouseN
             try:
                 agent_id = int(row['agent_id'])
                 target_id = int(row['target_id'])
@@ -202,7 +203,6 @@ class MABeDataset(Dataset):
                     
                 composite_action = f"{subject},{obj},{action}"
             except (ValueError, KeyError):
-                # Fallback if columns missing or invalid
                 composite_action = row['action'] if 'action' in row else None
 
             s = row['start_frame']
@@ -216,22 +216,13 @@ class MABeDataset(Dataset):
             
             if target_class:
                 idx = self.class_to_idx[target_class]
-                s_w = max(0, int(s - start_frame))
-                e_w = min(num_frames, int(e - start_frame))
+                # Scale indices to match the num_frames (FPS corrected)
+                s_w = max(0, int((s - start_frame) * scale))
+                e_w = min(num_frames, int((e - start_frame) * scale))
                 
                 if s_w < e_w:
                     labels[s_w:e_w, idx] = 1.0
-                    
-        # FPS Correction for Labels: If keypoints were interpolated (e.g. 25->30 FPS),
-        # labels need to be stretched to match the new num_frames.
-        # The current logic passes num_frames (which is the length of keypoints_tensor),
-        # but _create_label_tensor fills it based on original time.
-        # If num_frames != (end_frame - start_frame), we have a mismatch.
-        
-        if labels.shape[0] != num_frames:
-             # This should not happen if we initialized labels with num_frames
-             pass
-             
+                             
         return labels
 
     def _load_video(self, tracking_path, lab_id, video_id=None):
@@ -349,20 +340,12 @@ class MABeDataset(Dataset):
         keypoints_tensor = torch.FloatTensor(keypoints)
         
         if self.mode == 'train':
-            # Label Alignment for 25 FPS tracking data (AdaptableSnail)
-            # Labels are provided at 30 FPS.
-            label_start = start
-            label_end = end
-            if abs(fps - 25.0) < 0.1:
-                # Scale indices to 30 FPS
-                label_start = int(start * (30.0 / 25.0))
-                label_end = int(end * (30.0 / 25.0))
-            
             # Pass keypoints_tensor.shape[0] to ensure label length matches feature length
+            # The _create_label_tensor now handles scaling internally
             label = self._create_label_tensor(
                 sample_info['annotation_path'], 
-                label_start, 
-                label_end, 
+                start, 
+                end, 
                 keypoints_tensor.shape[0]
             )
             
