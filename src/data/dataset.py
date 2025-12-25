@@ -207,6 +207,17 @@ class MABeDataset(Dataset):
             keypoints[f_idx, m_idx, p_idx, 0] = df['x'].values
             keypoints[f_idx, m_idx, p_idx, 1] = df['y'].values
             
+            # Interpolate NaNs once during loading/preloading
+            if self.config['data']['preprocessing'].get('interpolate_nans', True):
+                mask = np.isnan(keypoints)
+                if mask.any():
+                    T_dim, M_dim, P_dim, C_dim = keypoints.shape
+                    flat = keypoints.reshape(T_dim, -1)
+                    df_interp = pd.DataFrame(flat)
+                    df_interp = df_interp.interpolate(method='linear', limit_direction='both')
+                    keypoints = df_interp.values.reshape(keypoints.shape)
+                    keypoints = np.nan_to_num(keypoints)
+
             if not self.preload and len(self.video_cache) > self.cache_size:
                 self.video_cache.pop(next(iter(self.video_cache)))
             self.video_cache[tracking_path] = keypoints
@@ -243,16 +254,6 @@ class MABeDataset(Dataset):
                 keypoints = np.concatenate([keypoints_slice, padding], axis=0)
             else:
                 keypoints = keypoints_slice
-
-        if self.config['data']['preprocessing']['interpolate_nans']:
-            mask = np.isnan(keypoints)
-            if mask.any():
-                T_dim = keypoints.shape[0]
-                flat = keypoints.reshape(T_dim, -1)
-                df_interp = pd.DataFrame(flat)
-                df_interp = df_interp.interpolate(method='linear', limit_direction='both')
-                keypoints = df_interp.values.reshape(keypoints.shape)
-                keypoints = np.nan_to_num(keypoints)
 
         if self.config['data']['preprocessing']['fix_fps']:
             keypoints = self.fps_correction(keypoints, lab_id)

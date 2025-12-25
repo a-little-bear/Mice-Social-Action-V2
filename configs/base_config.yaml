@@ -5,11 +5,13 @@ debug: false
 
 data:
   data_dir: "data/"
-  batch_size: 2048
-  num_workers: 16
+  batch_size: 1024
+  num_workers: 8
   window_size: 512
   preload: true
   pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
   cache_size: 1000
   
   sampling:

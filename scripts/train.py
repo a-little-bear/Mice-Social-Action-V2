@@ -135,7 +135,9 @@ def train():
                 sampler=train_subsampler,
                 num_workers=config['data']['num_workers'],
                 collate_fn=collate_fn,
-                pin_memory=config['data'].get('pin_memory', False)
+                pin_memory=config['data'].get('pin_memory', False),
+                prefetch_factor=config['data'].get('prefetch_factor', 2),
+                persistent_workers=config['data'].get('persistent_workers', False)
             )
             val_loader = DataLoader(
                 full_dataset, 
@@ -143,7 +145,9 @@ def train():
                 sampler=val_subsampler,
                 num_workers=config['data']['num_workers'],
                 collate_fn=collate_fn,
-                pin_memory=config['data'].get('pin_memory', False)
+                pin_memory=config['data'].get('pin_memory', False),
+                prefetch_factor=config['data'].get('prefetch_factor', 2),
+                persistent_workers=config['data'].get('persistent_workers', False)
             )
             
             best_f1 = run_fold(config, train_loader, val_loader, device, fold, input_dim, num_classes)
@@ -165,7 +169,9 @@ def train():
             shuffle=True,
             num_workers=config['data']['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=config['data'].get('pin_memory', False)
+            pin_memory=config['data'].get('pin_memory', False),
+            prefetch_factor=config['data'].get('prefetch_factor', 2),
+            persistent_workers=config['data'].get('persistent_workers', False)
         )
         val_loader = DataLoader(
             val_dataset, 
@@ -173,7 +179,9 @@ def train():
             shuffle=False,
             num_workers=config['data']['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=config['data'].get('pin_memory', False)
+            pin_memory=config['data'].get('pin_memory', False),
+            prefetch_factor=config['data'].get('prefetch_factor', 2),
+            persistent_workers=config['data'].get('persistent_workers', False)
         )
         
         run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes)
