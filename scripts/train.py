@@ -3,8 +3,27 @@ import torch
 import os
 import sys
 import numpy as np
+import gc
+import atexit
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
+
+def cleanup():
+    """Cleanup function to prevent memory leaks on crash or exit."""
+    print("\nPerforming memory cleanup...")
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    # Clear torch.compile artifacts if any
+    if hasattr(torch, '_dynamo'):
+        torch._dynamo.reset()
+        
+    print("Cleanup complete.")
+
+# Register cleanup to run on exit
+atexit.register(cleanup)
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,29 +81,37 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     
     trainer = Trainer(model, train_loader, val_loader, config, device=device)
     
-    best_f1 = 0.0
-    for epoch in range(config['training']['epochs']):
-        train_loss = trainer.train_epoch(epoch)
-        val_f1, _, _ = trainer.validate(epoch, post_processor)
-        
-        print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val F1 = {val_f1:.4f}")
-        
-        # Save logic
-        if val_f1 > best_f1:
-            best_f1 = val_f1
-            save_dir = config['training']['save_dir']
-            if fold_idx is not None:
-                save_dir = os.path.join(save_dir, f'fold_{fold_idx}')
-            os.makedirs(save_dir, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(save_dir, 'best_model.pth'))
-            # Also save metrics
-            with open(os.path.join(save_dir, 'metrics.json'), 'w') as f:
-                import json
-                json.dump({'best_f1': best_f1, 'epoch': epoch}, f)
+    try:
+        best_f1 = 0.0
+        for epoch in range(config['training']['epochs']):
+            train_loss = trainer.train_epoch(epoch)
+            val_f1, _, _ = trainer.validate(epoch, post_processor)
             
-        trainer.scheduler.step()
-        
-    return best_f1
+            print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val F1 = {val_f1:.4f}")
+            
+            # Save logic
+            if val_f1 > best_f1:
+                best_f1 = val_f1
+                save_dir = config['training']['save_dir']
+                if fold_idx is not None:
+                    save_dir = os.path.join(save_dir, f'fold_{fold_idx}')
+                os.makedirs(save_dir, exist_ok=True)
+                torch.save(model.state_dict(), os.path.join(save_dir, 'best_model.pth'))
+                # Also save metrics
+                with open(os.path.join(save_dir, 'metrics.json'), 'w') as f:
+                    import json
+                    json.dump({'best_f1': best_f1, 'epoch': epoch}, f)
+                
+            trainer.scheduler.step()
+            
+        return best_f1
+    finally:
+        # Cleanup model and trainer to free GPU memory
+        del trainer
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 def train():
     # 1. Load Config
@@ -145,9 +172,65 @@ def train():
         for fold, (train_ids, val_ids) in enumerate(kfold.split(indices)):
             print(f"\n=== FOLD {fold} ===")
             
-            train_subsampler = SubsetRandomSampler(train_ids)
-            val_subsampler = SubsetRandomSampler(val_ids)
+            train_loader = None
+            val_loader = None
             
+            try:
+                train_subsampler = SubsetRandomSampler(train_ids)
+                val_subsampler = SubsetRandomSampler(val_ids)
+                
+                loader_kwargs = {
+                    'batch_size': config['data']['batch_size'],
+                    'num_workers': config['data']['num_workers'],
+                    'collate_fn': collate_fn,
+                    'pin_memory': config['data'].get('pin_memory', False),
+                }
+                
+                if loader_kwargs['num_workers'] > 0:
+                    loader_kwargs['prefetch_factor'] = config['data'].get('prefetch_factor', 2)
+                    loader_kwargs['persistent_workers'] = config['data'].get('persistent_workers', False)
+
+                train_loader = DataLoader(
+                    full_dataset, 
+                    sampler=train_subsampler,
+                    **loader_kwargs
+                )
+                val_loader = DataLoader(
+                    full_dataset, 
+                    sampler=val_subsampler,
+                    **loader_kwargs
+                )
+                
+                best_f1 = run_fold(config, train_loader, val_loader, device, fold, input_dim, num_classes)
+                print(f"Fold {fold} Best F1: {best_f1:.4f}")
+                cv_scores.append(best_f1)
+            
+            except Exception as e:
+                print(f"Error in Fold {fold}: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            finally:
+                # Explicitly shutdown loaders and clear memory
+                if train_loader is not None:
+                    del train_loader
+                if val_loader is not None:
+                    del val_loader
+                cleanup()
+            
+        print("\n=== CV Results ===")
+        print(f"Scores: {cv_scores}")
+        print(f"Average F1: {np.mean(cv_scores):.4f} +/- {np.std(cv_scores):.4f}")
+        
+    else:
+        print("Starting Standard Training (Train/Val Split)...")
+        # Standard split logic
+        val_dataset = MABeDataset(config['data']['data_dir'], config, mode='val')
+        
+        train_loader = None
+        val_loader = None
+        
+        try:
             loader_kwargs = {
                 'batch_size': config['data']['batch_size'],
                 'num_workers': config['data']['num_workers'],
@@ -161,51 +244,28 @@ def train():
 
             train_loader = DataLoader(
                 full_dataset, 
-                sampler=train_subsampler,
+                shuffle=True,
                 **loader_kwargs
             )
             val_loader = DataLoader(
-                full_dataset, 
-                sampler=val_subsampler,
+                val_dataset, 
+                shuffle=False,
                 **loader_kwargs
             )
             
-            best_f1 = run_fold(config, train_loader, val_loader, device, fold, input_dim, num_classes)
-            print(f"Fold {fold} Best F1: {best_f1:.4f}")
-            cv_scores.append(best_f1)
+            run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes)
+        
+        except Exception as e:
+            print(f"Error during training: {e}")
+            import traceback
+            traceback.print_exc()
             
-        print("\n=== CV Results ===")
-        print(f"Scores: {cv_scores}")
-        print(f"Average F1: {np.mean(cv_scores):.4f} +/- {np.std(cv_scores):.4f}")
-        
-    else:
-        print("Starting Standard Training (Train/Val Split)...")
-        # Standard split logic
-        val_dataset = MABeDataset(config['data']['data_dir'], config, mode='val')
-        
-        loader_kwargs = {
-            'batch_size': config['data']['batch_size'],
-            'num_workers': config['data']['num_workers'],
-            'collate_fn': collate_fn,
-            'pin_memory': config['data'].get('pin_memory', False),
-        }
-        
-        if loader_kwargs['num_workers'] > 0:
-            loader_kwargs['prefetch_factor'] = config['data'].get('prefetch_factor', 2)
-            loader_kwargs['persistent_workers'] = config['data'].get('persistent_workers', False)
-
-        train_loader = DataLoader(
-            full_dataset, 
-            shuffle=True,
-            **loader_kwargs
-        )
-        val_loader = DataLoader(
-            val_dataset, 
-            shuffle=False,
-            **loader_kwargs
-        )
-        
-        run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes)
+        finally:
+            if train_loader is not None:
+                del train_loader
+            if val_loader is not None:
+                del val_loader
+            cleanup()
 
 if __name__ == '__main__':
     train()
