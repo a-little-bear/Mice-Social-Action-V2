@@ -360,18 +360,13 @@ class Trainer:
             T, C = all_probs[0].shape[1], all_probs[0].shape[2]
             
             full_probs = np.empty((N_total, T, C), dtype=np.float16)
-            full_targets = np.empty((N_total, T, C), dtype=np.float32) # Use float32 for targets to handle NaNs
+            full_targets = np.empty((N_total, T, C), dtype=np.uint8) 
             
             curr = 0
             for p_half, t_uint in zip(all_probs, all_targets):
                 batch_size = p_half.shape[0]
                 full_probs[curr:curr+batch_size] = p_half
-                
-                # Convert uint8 back to float32 with NaNs
-                t_float = t_uint.astype(np.float32)
-                t_float[t_uint == 255] = np.nan
-                full_targets[curr:curr+batch_size] = t_float
-                
+                full_targets[curr:curr+batch_size] = t_uint
                 curr += batch_size
             
             # Clear lists to free memory
@@ -379,18 +374,9 @@ class Trainer:
             del all_targets
             gc.collect()
             
-            # Flatten for processing: [N*T, C]
-            # Note: full_probs is already smoothed if smoothing was enabled
-            flat_probs = full_probs.reshape(-1, C).astype(np.float32)
+            # Flatten for processing: [N*T, C] (Use views to save memory)
+            flat_probs = full_probs.reshape(-1, C)
             flat_targets = full_targets.reshape(-1, C)
-            
-            # We can delete the 3D arrays now if we don't need them for gap filling
-            # But wait, gap filling needs temporal structure. 
-            # However, our current gap filling works on the flattened array which is technically 
-            # a concatenation of windows. This is an approximation.
-            del full_probs
-            del full_targets
-            gc.collect()
             
             # Handle lab_ids
             if len(all_lab_ids) > 0 and isinstance(all_lab_ids[0], torch.Tensor):
@@ -403,11 +389,18 @@ class Trainer:
             
             # Mask invalid frames
             print("[Post-Processing] Masking invalid frames...")
-            valid_mask = ~np.isnan(flat_targets).any(axis=-1)
+            # 255 is our NaN marker in uint8
+            valid_mask = (flat_targets != 255).all(axis=-1)
             
+            # Filter (This creates copies, so we must be careful)
             flat_probs = flat_probs[valid_mask]
             flat_targets = flat_targets[valid_mask]
             flat_lab_ids = flat_lab_ids[valid_mask]
+            
+            # Now safe to delete the original 3D arrays
+            del full_probs
+            del full_targets
+            gc.collect()
             
             # 1. Optimize Thresholds
             if self.config['post_processing'].get('optimize_thresholds', False):

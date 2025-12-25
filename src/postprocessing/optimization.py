@@ -33,7 +33,8 @@ class PostProcessor:
             lab_mask = (lab_ids == lab)
             # [N_lab, C]
             lab_preds = predictions[lab_mask]
-            lab_targets = targets[lab_mask] > 0.5
+            # Handle uint8 targets (1 is positive, 0 is negative, 255 is NaN)
+            lab_targets = (targets[lab_mask] == 1)
             
             # Calculate sigmas for all classes at once
             # [C]
