@@ -4,6 +4,7 @@ import numpy as np
 import os
 import json
 import inspect
+import gc
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 from collections import defaultdict
@@ -225,6 +226,9 @@ class Trainer:
                       self.config['post_processing'].get('tie_breaking', 'none') != 'none'
         
         with torch.no_grad():
+            if collect_all and self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
+                print(f"Note: Applying temporal smoothing per batch during validation to save memory.")
+                
             pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
             for batch in pbar:
                 keypoints, labels, lab_ids, subject_ids, video_ids = batch

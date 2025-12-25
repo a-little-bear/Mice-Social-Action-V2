@@ -79,9 +79,9 @@ class PostProcessor:
             optimized_thresholds[~has_positives] = 0.5
             
             self.thresholds[lab] = optimized_thresholds
-            print(f"Lab {lab} thresholds optimized.")
-
-    def apply_tie_breaking(self, predictions, lab_ids):
+            # print(f"Lab {lab} thresholds optimized.") # Too noisy
+        
+        print(f"Thresholds optimized for {len(unique_labs)} labs.")
         """
         Apply tie-breaking logic when multiple classes are above threshold.
         predictions: [N, C] probabilities
@@ -145,7 +145,7 @@ class PostProcessor:
                 
         return final_preds
 
-    def apply_smoothing(self, predictions):
+    def apply_smoothing(self, predictions, verbose=False):
         """
         Apply temporal smoothing (EMA or Median).
         predictions: [T, C] or [N, T, C]
@@ -155,7 +155,8 @@ class PostProcessor:
         if method == 'none':
             return predictions
             
-        print(f"Applying temporal smoothing (method: {method})...")
+        if verbose:
+            print(f"Applying temporal smoothing (method: {method})...")
         # Determine time axis
         if predictions.ndim == 2:
             # [T, C]
@@ -198,7 +199,7 @@ class PostProcessor:
         
         return predictions
 
-    def fill_gaps(self, predictions):
+    def fill_gaps(self, predictions, verbose=False):
         """
         Fill short gaps and remove short bursts in binary predictions.
         predictions: [T, C] binary
@@ -210,7 +211,8 @@ class PostProcessor:
         if max_gap <= 0 and min_duration <= 0:
             return predictions
             
-        print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration})...")
+        if verbose:
+            print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration})...")
         T, C = predictions.shape
         # Pad with 1s to fill boundary gaps
         padded = np.ones((T + 2, C), dtype=predictions.dtype)
@@ -255,7 +257,7 @@ class PostProcessor:
         # predictions: [N, C] probabilities
         
         # 1. Smoothing (on probabilities)
-        preds = self.apply_smoothing(predictions)
+        preds = self.apply_smoothing(predictions, verbose=True)
         
         # 2. Thresholding & Tie Breaking
         final_binary = np.zeros_like(preds)
@@ -285,6 +287,6 @@ class PostProcessor:
             final_binary = (preds > 0.5).astype(int)
         
         # 3. Gap Filling (on binary)
-        final_binary = self.fill_gaps(final_binary)
+        final_binary = self.fill_gaps(final_binary, verbose=True)
         
         return final_binary
