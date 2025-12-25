@@ -42,8 +42,11 @@ class Trainer:
             self.criterion = nn.BCEWithLogitsLoss(reduction='none')
         
         self.best_f1 = 0.0
-        self.optimizer.zero_grad(set_to_none=True)
-        
+        self.results = []
+
+    def train_epoch(self, epoch):
+        self.model.train()
+        total_loss = 0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         for batch in pbar:
             features, labels, lab_ids, subject_ids = batch
@@ -54,6 +57,8 @@ class Trainer:
                 lab_ids = lab_ids.to(self.device, non_blocking=True)
             if isinstance(subject_ids, torch.Tensor):
                 subject_ids = subject_ids.to(self.device, non_blocking=True)
+            
+            self.optimizer.zero_grad(set_to_none=True)
             
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = self.model(features, lab_ids, subject_ids)
@@ -95,13 +100,6 @@ class Trainer:
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
-            self.optimizer.step()
-            self.optimizer.zero_grad(set_to_none=True* mask.float()
-                    loss = loss.sum() / (mask.sum() * loss.shape[-1] + 1e-6)
-            elif loss.ndim > 0:
-                loss = loss.mean()
-                
-            loss.backward()
             self.optimizer.step()
             
             total_loss += loss.item()
