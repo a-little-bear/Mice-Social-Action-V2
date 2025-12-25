@@ -8,14 +8,14 @@ test: false
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
   data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
-  batch_size: 512 # Reduced to 512 for stability. Can increase to 1024 if stable.
-  num_workers: 4 # Reduced to 4 to save RAM.
+  batch_size: 2048 # Increased to 2048 to fill GPU.
+  num_workers: 16 # Increased to 16 to feed the GPU.
   window_size: 512
   preload: false # Keep false.
   pin_memory: true
   prefetch_factor: 2
   persistent_workers: true
-  cache_size: 4 # Reduced cache size per worker.
+  cache_size: 8 # Increased slightly.
   
   sampling:
     strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
