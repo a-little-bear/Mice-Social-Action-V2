@@ -53,9 +53,24 @@ class Trainer:
             
             features = features.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
-            if isinstance(lab_ids, torch.Tensor):
+            
+            # Convert lab_ids and subject_ids to tensors if they aren't already
+            # This avoids graph breaks in torch.compile
+            if not isinstance(lab_ids, torch.Tensor):
+                model_to_check = self.model
+                if hasattr(model_to_check, '_orig_mod'):
+                    model_to_check = model_to_check._orig_mod
+                
+                if hasattr(model_to_check, 'context_adapter') and model_to_check.context_adapter is not None:
+                    lab_map = model_to_check.context_adapter.lab_map
+                    lab_indices = [lab_map.get(l, 21) for l in lab_ids]
+                    lab_ids = torch.tensor(lab_indices, device=self.device)
+            else:
                 lab_ids = lab_ids.to(self.device, non_blocking=True)
-            if isinstance(subject_ids, torch.Tensor):
+                
+            if not isinstance(subject_ids, torch.Tensor):
+                subject_ids = torch.tensor(subject_ids, device=self.device)
+            else:
                 subject_ids = subject_ids.to(self.device, non_blocking=True)
             
             self.optimizer.zero_grad(set_to_none=True)
@@ -63,35 +78,43 @@ class Trainer:
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = self.model(features, lab_ids, subject_ids)
                 
+                # Handle NaNs for target generation to avoid issues in compiled kernels
+                labels_fixed = torch.nan_to_num(labels, nan=0.0)
+                
                 if isinstance(outputs, tuple):
                     logits, detection_logits = outputs
-                    detection_targets = (labels.sum(dim=-1) > 0).float().unsqueeze(-1)
+                    detection_targets = (labels_fixed.sum(dim=-1) > 0).float().unsqueeze(-1)
                     det_loss = nn.BCEWithLogitsLoss()(detection_logits, detection_targets)
                     
                     if self.config['training']['loss_type'] == 'softmax':
-                        targets = torch.argmax(labels, dim=-1)
+                        targets = torch.argmax(labels_fixed, dim=-1)
                         cls_loss = self.criterion(logits.transpose(1, 2), targets)
                     else:
-                        cls_loss = self.criterion(logits, labels)
+                        cls_loss = self.criterion(logits, labels_fixed)
                     
                     loss = cls_loss.mean() + 0.5 * det_loss
                 else:
                     logits = outputs
                     if self.config['training']['loss_type'] == 'softmax':
-                        targets = torch.argmax(labels, dim=-1)
+                        targets = torch.argmax(labels_fixed, dim=-1)
                         loss = self.criterion(logits.transpose(1, 2), targets)
                     elif self.config['training']['loss_type'] == 'soft_f1':
-                        loss = self.criterion(logits, labels)
+                        loss = self.criterion(logits, labels_fixed)
                     else:
-                        loss = self.criterion(logits, labels)
+                        loss = self.criterion(logits, labels_fixed)
                 
                 if self.config['training']['mask_unlabeled'] and self.config['training']['loss_type'] not in ['soft_f1']:
                     mask = ~torch.isnan(labels).any(dim=-1) if labels.ndim == 3 else ~torch.isnan(labels)
                     if loss.ndim > 0:
-                        if mask.ndim < loss.ndim:
+                        # Ensure mask matches loss dimensions for broadcasting
+                        while mask.ndim < loss.ndim:
                             mask = mask.unsqueeze(-1)
-                        loss = loss * mask.float()
-                        loss = loss.sum() / (mask.sum() * loss.shape[-1] + 1e-6)
+                        
+                        # Use torch.where for more stable compilation of masked loss
+                        loss = torch.where(mask, loss, torch.zeros_like(loss))
+                        # Calculate denominator based on actual masked elements
+                        denom = mask.expand_as(loss).sum()
+                        loss = loss.sum() / (denom + 1e-6)
                 elif loss.ndim > 0:
                     loss = loss.mean()
                 
@@ -120,14 +143,26 @@ class Trainer:
                 features, labels, lab_ids, subject_ids, video_ids = batch
                 
                 features = features.to(self.device)
-                if isinstance(lab_ids, torch.Tensor):
+                
+                # Convert lab_ids and subject_ids to tensors for the model
+                if not isinstance(lab_ids, torch.Tensor):
+                    model_to_check = self.model
+                    if hasattr(model_to_check, '_orig_mod'):
+                        model_to_check = model_to_check._orig_mod
+                    
+                    if hasattr(model_to_check, 'context_adapter') and model_to_check.context_adapter is not None:
+                        lab_map = model_to_check.context_adapter.lab_map
+                        lab_indices = [lab_map.get(l, 21) for l in lab_ids]
+                        lab_ids_dev = torch.tensor(lab_indices, device=self.device)
+                    else:
+                        lab_ids_dev = lab_ids
+                else:
                     lab_ids_dev = lab_ids.to(self.device)
+                    
+                if not isinstance(subject_ids, torch.Tensor):
+                    subject_ids_dev = torch.tensor(subject_ids, device=self.device)
                 else:
-                    lab_ids_dev = lab_ids
-                if isinstance(subject_ids, torch.Tensor):
                     subject_ids_dev = subject_ids.to(self.device)
-                else:
-                    subject_ids_dev = subject_ids
                 
                 outputs = self.model(features, lab_ids_dev, subject_ids_dev)
                 if isinstance(outputs, tuple):

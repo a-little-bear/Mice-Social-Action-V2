@@ -157,23 +157,27 @@ class FPSCorrection:
     def __init__(self, target_fps=30):
         self.target_fps = target_fps
 
-    def __call__(self, keypoints, lab_id):
-        if lab_id == 'AdaptableSnail':
-            current_fps = 25
-            target_T = int(keypoints.shape[0] * (self.target_fps / current_fps))
+    def __call__(self, keypoints, lab_id, current_fps=None):
+        # If current_fps is not provided, fallback to lab-based defaults
+        if current_fps is None:
+            if lab_id == 'AdaptableSnail':
+                current_fps = 25
+            else:
+                current_fps = 30
+        
+        if abs(current_fps - self.target_fps) < 0.1:
+            return keypoints
             
-            old_indices = np.arange(keypoints.shape[0])
-            new_indices = np.linspace(0, keypoints.shape[0] - 1, target_T)
+        T = keypoints.shape[0]
+        target_T = int(T * (self.target_fps / current_fps))
+        
+        if T == target_T:
+            return keypoints
             
-            flat_kps = keypoints.reshape(keypoints.shape[0], -1)
-            new_flat_kps = np.zeros((target_T, flat_kps.shape[1]))
-            
-            for i in range(flat_kps.shape[1]):
-                new_flat_kps[:, i] = np.interp(new_indices, old_indices, flat_kps[:, i])
-                
-            return new_flat_kps.reshape((target_T,) + keypoints.shape[1:])
-            
-        return keypoints
+        # Vectorized interpolation using scipy.ndimage.zoom
+        # keypoints: (T, M, P, 2)
+        zoom_factors = (target_T / T, 1, 1, 1)
+        return zoom(keypoints, zoom_factors, order=1)
 
 class Augmentation:
     def __init__(self, config):
@@ -207,24 +211,22 @@ class Augmentation:
         if self.config.get('time_stretch') and np.random.rand() > 0.5:
             factor = np.random.uniform(0.8, 1.2)
             T = keypoints.shape[0]
-            new_T = int(T * factor)
             
-            old_indices = np.arange(T)
-            new_indices = np.linspace(0, T - 1, new_T)
+            # Vectorized time stretch using zoom
+            zoom_factors = (factor, 1, 1, 1)
+            stretched = zoom(keypoints, zoom_factors, order=1)
             
-            shape = keypoints.shape
-            flat_kps = keypoints.reshape(T, -1)
-            new_flat_kps = np.zeros((new_T, flat_kps.shape[1]))
+            # Resample back to original T to maintain window size
+            new_T = stretched.shape[0]
+            resample_factors = (T / new_T, 1, 1, 1)
+            keypoints = zoom(stretched, resample_factors, order=1)
             
-            for i in range(flat_kps.shape[1]):
-                new_flat_kps[:, i] = np.interp(new_indices, old_indices, flat_kps[:, i])
-                
-            final_indices = np.linspace(0, new_T - 1, T)
-            resampled_back = np.zeros((T, flat_kps.shape[1]))
-            for i in range(flat_kps.shape[1]):
-                resampled_back[:, i] = np.interp(final_indices, np.arange(new_T), new_flat_kps[:, i])
-            
-            keypoints = resampled_back.reshape(shape)
+            # Ensure exact T due to rounding
+            if keypoints.shape[0] > T:
+                keypoints = keypoints[:T]
+            elif keypoints.shape[0] < T:
+                pad = np.zeros((T - keypoints.shape[0],) + keypoints.shape[1:], dtype=keypoints.dtype)
+                keypoints = np.concatenate([keypoints, pad], axis=0)
 
         if self.config.get('noise', 0.0) > 0:
             noise_level = self.config['noise']

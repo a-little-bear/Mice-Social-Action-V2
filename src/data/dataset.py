@@ -83,8 +83,10 @@ class MABeDataset(Dataset):
                 
                 if 'video_duration_sec' in row and 'frames_per_second' in row:
                     T_est = int(row['video_duration_sec'] * row['frames_per_second'])
+                    fps = row['frames_per_second']
                 else:
                     T_est = 18000
+                    fps = 30.0
                 
                 num_windows = (T_est + self.stride - 1) // self.stride
                 
@@ -99,7 +101,8 @@ class MABeDataset(Dataset):
                         'video_id': video_id,
                         'subject_id': 0,
                         'start': start,
-                        'end': end
+                        'end': end,
+                        'fps': fps
                     })
                     
                     if use_sampler:
@@ -116,7 +119,7 @@ class MABeDataset(Dataset):
             print(f"Starting parallel preload of all tracking data into RAM (Mode: {mode})...")
             unique_videos = {}
             for d in self.data:
-                key = (d['tracking_path'], d['lab_id'])
+                key = (d['tracking_path'], d['lab_id'], d['video_id'])
                 unique_videos[key] = True
             
             from tqdm import tqdm
@@ -169,9 +172,10 @@ class MABeDataset(Dataset):
                     labels[s_w:e_w, idx] = 1.0
         return labels
 
-    def _load_video(self, tracking_path, lab_id):
-        if tracking_path in self.video_cache:
-            return self.video_cache[tracking_path]
+    def _load_video(self, tracking_path, lab_id, video_id=None):
+        cache_key = (tracking_path, lab_id)
+        if cache_key in self.video_cache:
+            return self.video_cache[cache_key]
             
         try:
             df = pd.read_parquet(tracking_path)
@@ -194,7 +198,16 @@ class MABeDataset(Dataset):
             
             keypoints = np.full((T, M, P, 2), np.nan, dtype=np.float32)
             
-            mouse_map = {m: i for i, m in enumerate(mice)}
+            # Mouse ID Correction for AdaptableSnail (Swapped IDs)
+            # Reference: Kaggle Discussion 3305943
+            swapped_videos = ['1212811043', '1260392287', '1351098077'] # Add more as needed
+            if lab_id == 'AdaptableSnail' and video_id in swapped_videos and len(mice) >= 2:
+                mouse_map = {mice[0]: 1, mice[1]: 0}
+                for i in range(2, len(mice)):
+                    mouse_map[mice[i]] = i
+            else:
+                mouse_map = {m: i for i, m in enumerate(mice)}
+            
             part_map = {p: i for i, p in enumerate(expected_parts)}
             
             df = df[df['mouse_id'].isin(mice)]
@@ -231,11 +244,13 @@ class MABeDataset(Dataset):
         sample_info = self.data[idx]
         tracking_path = sample_info['tracking_path']
         lab_id = sample_info['lab_id']
+        video_id = sample_info['video_id']
         subject_id = sample_info['subject_id']
         start = sample_info['start']
         end = sample_info['end']
+        fps = sample_info.get('fps', 30.0)
         
-        keypoints_full = self._load_video(tracking_path, lab_id)
+        keypoints_full = self._load_video(tracking_path, lab_id, video_id)
         
         if keypoints_full is None:
              return torch.zeros(self.window_size, 1), torch.zeros(self.window_size, 1), lab_id, subject_id
@@ -256,7 +271,7 @@ class MABeDataset(Dataset):
                 keypoints = keypoints_slice
 
         if self.config['data']['preprocessing']['fix_fps']:
-            keypoints = self.fps_correction(keypoints, lab_id)
+            keypoints = self.fps_correction(keypoints, lab_id, current_fps=fps)
 
         keypoints = self.body_part_mapping(keypoints, lab_id)
 
@@ -269,19 +284,23 @@ class MABeDataset(Dataset):
         features = self.feature_generator(keypoints_tensor)
         
         if self.mode == 'train':
-            label = self._create_label_tensor(sample_info['annotation_path'], start, end, self.window_size)
+            # Label Alignment for 25 FPS tracking data (AdaptableSnail)
+            # Labels are provided at 30 FPS.
+            label_start = start
+            label_end = end
+            if abs(fps - 25.0) < 0.1:
+                # Scale indices to 30 FPS
+                label_start = int(start * (30.0 / 25.0))
+                label_end = int(end * (30.0 / 25.0))
             
-            # Resample labels if feature length changed (e.g. due to FPS correction)
-            if label.shape[0] != features.shape[0]:
-                target_len = features.shape[0]
-                # (T, C) -> (1, C, T)
-                label_t = label.unsqueeze(0).permute(0, 2, 1)
-                label_resampled = torch.nn.functional.interpolate(
-                    label_t, size=target_len, mode='nearest'
-                )
-                # (1, C, T) -> (T, C)
-                label = label_resampled.permute(0, 2, 1).squeeze(0)
-                
-            return features, label, lab_id, subject_id, sample_info['video_id']
+            # Pass features.shape[0] to ensure label length matches feature length
+            label = self._create_label_tensor(
+                sample_info['annotation_path'], 
+                label_start, 
+                label_end, 
+                features.shape[0]
+            )
             
-        return features, lab_id, subject_id, sample_info['video_id']
+            return features, label, lab_id, subject_id, video_id
+            
+        return features, lab_id, subject_id, video_id

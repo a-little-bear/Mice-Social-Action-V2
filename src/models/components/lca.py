@@ -27,26 +27,13 @@ class LabContextAdapter(nn.Module):
         }
 
     def forward(self, lab_ids, subject_ids=None):
-        # lab_ids: List of strings or Tensor of ints
-        # subject_ids: List of ints or Tensor of ints
+        # lab_ids: Tensor of ints
+        # subject_ids: Tensor of ints
         
-        device = self.lab_embedding.weight.device
-        
-        if isinstance(lab_ids, (list, tuple)):
-            # Convert strings to indices
-            indices = [self.lab_map.get(l, 21) for l in lab_ids]
-            lab_indices = torch.tensor(indices, device=device)
-        else:
-            lab_indices = lab_ids
-            
-        lab_emb = self.lab_embedding(lab_indices)
+        lab_emb = self.lab_embedding(lab_ids)
         
         if subject_ids is not None:
-            if isinstance(subject_ids, (list, tuple)):
-                 subject_indices = torch.tensor(subject_ids, device=device)
-            else:
-                 subject_indices = subject_ids
-            sub_emb = self.subject_embedding(subject_indices)
+            sub_emb = self.subject_embedding(subject_ids)
             return torch.cat([lab_emb, sub_emb], dim=-1)
             
         return lab_emb
