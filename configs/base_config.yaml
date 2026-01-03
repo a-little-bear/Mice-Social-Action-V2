@@ -9,9 +9,9 @@ test: false
 data:
   data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 4096 # Increased for RTX 6000 96GB.
-  num_workers: 8 # Increased for AutoDL high-core count.
+  num_workers: 4 # Increased for AutoDL high-core count.
   window_size: 512
-  preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
+  preload: false # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
   prefetch_factor: 4
   persistent_workers: true
