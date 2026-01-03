@@ -11,6 +11,10 @@ from .features import FeatureGenerator
 from .sampling import ActionRichSampler
 
 class MABeDataset(Dataset):
+    # Class-level caches to share data across train/val/test instances
+    _video_cache = {}
+    _anno_cache = {}
+
     def __init__(self, data_path, config, mode='train'):
         self.data_path = data_path
         self.config = config
@@ -28,12 +32,9 @@ class MABeDataset(Dataset):
         self.augmentor = Augmentation(config['data']['augmentation']) if mode == 'train' else None
         self.feature_generator = FeatureGenerator(config['data']['features'])
         self.body_part_mapping = BodyPartMapping(enabled=config['data']['preprocessing'].get('unify_body_parts', False))
-        print(f"DEBUG: BodyPartMapping enabled: {self.body_part_mapping.enabled}")
         
         self.data = []
         self.labels = []
-        self.video_cache = {}
-        self.anno_cache = {}
         self.cache_size = config['data'].get('cache_size', 128)
         self.preload = config['data'].get('preload', False)
         
@@ -162,37 +163,41 @@ class MABeDataset(Dataset):
                         self.labels.append(True) # Guaranteed to have an action
 
         if self.preload:
-            print(f"Starting parallel preload of all tracking data into RAM (Mode: {mode})...")
-            unique_videos = {}
-            for d in self.data:
-                key = (d['tracking_path'], d['lab_id'], d['video_id'])
-                unique_videos[key] = True
-            
-            from tqdm import tqdm
-            video_list = list(unique_videos.keys())
-            
-            if not video_list:
-                print(f"No videos found to preload for mode: {mode}")
+            # Check if already preloaded by another instance to avoid redundant work
+            if len(MABeDataset._video_cache) > 0:
+                print(f"Data already preloaded in memory. Skipping redundant preload for mode: {mode}")
             else:
-                # Use ThreadPoolExecutor for parallel I/O and processing
-                # 22 cores available, using 16 workers to leave some for system/other tasks
-                max_workers = min(len(video_list), 16)
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    def _preload_task(x):
-                        self._load_video(*x)
-                        # Also preload annotation if it exists
-                        anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
-                        if os.path.exists(anno_path):
-                            # Always reload to ensure it's in cache, even if logic above is complex
-                            try:
-                                self.anno_cache[anno_path] = pd.read_parquet(anno_path)
-                            except:
-                                pass
-                    
-                    list(tqdm(executor.map(_preload_task, video_list), 
-                              total=len(video_list), desc="Preloading Videos & Annotations"))
+                print(f"Starting parallel preload of all tracking data into RAM (Mode: {mode})...")
+                unique_videos = {}
+                for d in self.data:
+                    key = (d['tracking_path'], d['lab_id'], d['video_id'])
+                    unique_videos[key] = True
                 
-                print(f"Preloaded {len(self.video_cache)} videos and {len(self.anno_cache)} annotations into RAM.")
+                from tqdm import tqdm
+                video_list = list(unique_videos.keys())
+                
+                if not video_list:
+                    print(f"No videos found to preload for mode: {mode}")
+                else:
+                    # Use ThreadPoolExecutor for parallel I/O and processing
+                    # 22 cores available, using 16 workers to leave some for system/other tasks
+                    max_workers = min(len(video_list), 16)
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        def _preload_task(x):
+                            self._load_video(*x)
+                            # Also preload annotation if it exists
+                            anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
+                            if os.path.exists(anno_path):
+                                # Always reload to ensure it's in cache, even if logic above is complex
+                                try:
+                                    MABeDataset._anno_cache[anno_path] = pd.read_parquet(anno_path)
+                                except:
+                                    pass
+                        
+                        list(tqdm(executor.map(_preload_task, video_list), 
+                                  total=len(video_list), desc="Preloading Videos & Annotations"))
+                    
+                    print(f"Preloaded {len(MABeDataset._video_cache)} videos and {len(MABeDataset._anno_cache)} annotations into RAM.")
 
         if mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich':
             self.sampler = ActionRichSampler(self.labels, window_size=512, bias_factor=config['data']['sampling']['bias_factor'])
@@ -213,20 +218,20 @@ class MABeDataset(Dataset):
         original_len = end_frame - start_frame
         scale = num_frames / original_len if original_len > 0 else 1.0
         
-        if annotation_path in self.anno_cache:
-            df = self.anno_cache[annotation_path]
+        if annotation_path in MABeDataset._anno_cache:
+            df = MABeDataset._anno_cache[annotation_path]
         else:
             try:
                 df = pd.read_parquet(annotation_path)
                 # Only pop if not preloading and cache is full
-                if not self.preload and len(self.anno_cache) >= self.cache_size:
+                if not self.preload and len(MABeDataset._anno_cache) >= self.cache_size:
                     # Remove oldest entry
-                    it = iter(self.anno_cache)
+                    it = iter(MABeDataset._anno_cache)
                     try:
-                        self.anno_cache.pop(next(it))
+                        MABeDataset._anno_cache.pop(next(it))
                     except (StopIteration, KeyError):
                         pass
-                self.anno_cache[annotation_path] = df
+                MABeDataset._anno_cache[annotation_path] = df
             except:
                 return labels
             
@@ -275,8 +280,8 @@ class MABeDataset(Dataset):
 
     def _load_video(self, tracking_path, lab_id, video_id=None):
         cache_key = (tracking_path, lab_id)
-        if cache_key in self.video_cache:
-            return self.video_cache[cache_key]
+        if cache_key in MABeDataset._video_cache:
+            return MABeDataset._video_cache[cache_key]
             
         try:
             df = pd.read_parquet(tracking_path)
@@ -332,13 +337,13 @@ class MABeDataset(Dataset):
                     keypoints = df_interp.values.reshape(keypoints.shape)
                     keypoints = np.nan_to_num(keypoints)
 
-            if not self.preload and len(self.video_cache) >= self.cache_size:
-                it = iter(self.video_cache)
+            if not self.preload and len(MABeDataset._video_cache) >= self.cache_size:
+                it = iter(MABeDataset._video_cache)
                 try:
-                    self.video_cache.pop(next(it))
+                    MABeDataset._video_cache.pop(next(it))
                 except (StopIteration, KeyError):
                     pass
-            self.video_cache[cache_key] = keypoints
+            MABeDataset._video_cache[cache_key] = keypoints
             
             return keypoints
         except Exception as e:

@@ -84,14 +84,6 @@ class Trainer:
             # Handle NaNs for target generation to avoid issues in compiled kernels
             labels_fixed = torch.nan_to_num(labels, nan=0.0)
             
-            if first_batch:
-                print(f"\n[DEBUG Epoch {epoch} Batch 0]")
-                print(f"  Labels Shape: {labels.shape}")
-                print(f"  Labels NaNs: {torch.isnan(labels).sum().item()}")
-                print(f"  Labels Positives: {torch.nansum(labels).item()}")
-                print(f"  Labels Mean (ignoring NaNs): {torch.nanmean(labels).item()}")
-                first_batch = False
-            
             # Features are now generated inside the model's forward pass
             
             # Convert lab_ids and subject_ids to tensors if they aren't already
@@ -140,9 +132,6 @@ class Trainer:
 
                 if isinstance(outputs, tuple):
                     logits, detection_logits = outputs
-                    # Debug logits
-                    if epoch == 0 and torch.rand(1).item() < 0.01:
-                         print(f"  Logits Mean: {logits.mean().item()}, Std: {logits.std().item()}")
                          
                     detection_targets = (labels_fixed.sum(dim=-1) > 0).float().unsqueeze(-1)
                     det_loss = nn.BCEWithLogitsLoss()(detection_logits, detection_targets)
