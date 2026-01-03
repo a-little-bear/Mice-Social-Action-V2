@@ -154,8 +154,9 @@ class BodyPartMapping:
 
 
 class FPSCorrection:
-    def __init__(self, target_fps=30):
+    def __init__(self, target_fps=30, target_length=None):
         self.target_fps = target_fps
+        self.target_length = target_length
 
     def __call__(self, keypoints, lab_id, current_fps=None):
         # If current_fps is not provided, fallback to lab-based defaults
@@ -165,13 +166,15 @@ class FPSCorrection:
             else:
                 current_fps = 30
         
-        if abs(current_fps - self.target_fps) < 0.1:
-            return keypoints
-            
         T = keypoints.shape[0]
-        target_T = int(T * (self.target_fps / current_fps))
         
-        if T == target_T:
+        # Determine target T
+        if self.target_length is not None:
+            target_T = self.target_length
+        else:
+            target_T = int(T * (self.target_fps / current_fps))
+        
+        if T == target_T and abs(current_fps - self.target_fps) < 0.1:
             return keypoints
             
         # Vectorized interpolation using scipy.ndimage.zoom

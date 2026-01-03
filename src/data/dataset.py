@@ -18,7 +18,10 @@ class MABeDataset(Dataset):
         self.window_size = config['data'].get('window_size', 512)
         self.stride = self.window_size
         
-        self.fps_correction = FPSCorrection(target_fps=config['data']['preprocessing']['target_fps'])
+        self.fps_correction = FPSCorrection(
+            target_fps=config['data']['preprocessing']['target_fps'],
+            target_length=self.window_size
+        )
         self.coord_transform = CoordinateTransform(
             view=config['data']['preprocessing']['view']
         )
@@ -35,7 +38,8 @@ class MABeDataset(Dataset):
         self.preload = config['data'].get('preload', False)
         
         # Load metadata
-        csv_path = os.path.join(data_path, 'train.csv')
+        csv_name = 'train.csv' if mode in ['train', 'val'] else 'test.csv'
+        csv_path = os.path.join(data_path, csv_name)
         if not os.path.exists(csv_path):
             print(f"Warning: {csv_path} not found.")
             self.classes = []
@@ -69,8 +73,11 @@ class MABeDataset(Dataset):
                 lab_id = row['lab_id']
                 video_id = str(row['video_id'])
                 
-                tracking_file = os.path.join(data_path, 'train_tracking', lab_id, f'{video_id}.parquet')
-                annotation_file = os.path.join(data_path, 'train_annotation', lab_id, f'{video_id}.parquet')
+                tracking_dir = 'train_tracking' if mode in ['train', 'val'] else 'test_tracking'
+                annotation_dir = 'train_annotation' if mode in ['train', 'val'] else 'test_annotation'
+                
+                tracking_file = os.path.join(data_path, tracking_dir, lab_id, f'{video_id}.parquet')
+                annotation_file = os.path.join(data_path, annotation_dir, lab_id, f'{video_id}.parquet')
                 
                 if not os.path.exists(tracking_file):
                     continue
@@ -89,12 +96,22 @@ class MABeDataset(Dataset):
                     T_est = 18000
                     fps = 30.0
                 
-                num_windows = (T_est + self.stride - 1) // self.stride
+                # Adjust window and stride based on FPS to ensure consistent output length after correction
+                target_fps = config['data']['preprocessing']['target_fps']
+                fps_ratio = fps / target_fps
+                adj_window = int(self.window_size * fps_ratio)
+                adj_stride = int(self.stride * fps_ratio)
+                
+                # Ensure adj_window is at least 1
+                adj_window = max(1, adj_window)
+                adj_stride = max(1, adj_stride)
+
+                num_windows = (T_est + adj_stride - 1) // adj_stride
                 
                 # 1. Regular sliding windows
                 for w in range(num_windows):
-                    start = w * self.stride
-                    end = start + self.window_size
+                    start = w * adj_stride
+                    end = start + adj_window
                     
                     self.data.append({
                         'tracking_path': tracking_file,
@@ -125,8 +142,8 @@ class MABeDataset(Dataset):
                         event_center = (event_start + event_stop) // 2
                         
                         # Center the window on the event
-                        start = max(0, event_center - self.window_size // 2)
-                        end = start + self.window_size
+                        start = max(0, event_center - adj_window // 2)
+                        end = start + adj_window
                         
                         # Avoid adding windows beyond estimated duration
                         if start >= T_est:
@@ -338,7 +355,12 @@ class MABeDataset(Dataset):
         keypoints_full = self._load_video(tracking_path, lab_id, video_id)
         
         if keypoints_full is None:
-             return torch.zeros(self.window_size, 1), torch.zeros(self.window_size, 1), lab_id, subject_id
+             # Return dummy data with correct number of values
+             dummy_kps = torch.zeros(self.window_size, 2, 7, 2)
+             if self.mode in ['train', 'val']:
+                 dummy_labels = torch.zeros(self.window_size, self.num_classes)
+                 return dummy_kps, dummy_labels, lab_id, subject_id, video_id
+             return dummy_kps, lab_id, subject_id, video_id
              
         T_full = keypoints_full.shape[0]
         
@@ -367,7 +389,7 @@ class MABeDataset(Dataset):
             
         keypoints_tensor = torch.FloatTensor(keypoints)
         
-        if self.mode == 'train':
+        if self.mode in ['train', 'val']:
             # Pass keypoints_tensor.shape[0] to ensure label length matches feature length
             # The _create_label_tensor now handles scaling internally
             label = self._create_label_tensor(

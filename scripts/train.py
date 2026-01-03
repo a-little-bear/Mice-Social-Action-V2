@@ -35,21 +35,32 @@ from src.postprocessing.optimization import PostProcessor
 from src.training.trainer import Trainer
 
 def collate_fn(batch):
-    keypoints, labels, lab_ids, subject_ids, video_ids = zip(*batch)
+    if len(batch[0]) == 5:
+        keypoints, labels, lab_ids, subject_ids, video_ids = zip(*batch)
+        has_labels = True
+    else:
+        keypoints, lab_ids, subject_ids, video_ids = zip(*batch)
+        has_labels = False
+        
     lengths = [k.shape[0] for k in keypoints]
     max_len = max(lengths)
     
     # keypoints[0] shape: (T, M, K, 2)
     kp_shape = keypoints[0].shape[1:]
     padded_keypoints = torch.zeros(len(keypoints), max_len, *kp_shape)
-    padded_labels = torch.zeros(len(labels), max_len, labels[0].shape[1])
     
-    for i, (k, l) in enumerate(zip(keypoints, labels)):
-        end = lengths[i]
-        padded_keypoints[i, :end] = k
-        padded_labels[i, :end] = l
-        
-    return padded_keypoints, padded_labels, lab_ids, subject_ids, video_ids
+    if has_labels:
+        padded_labels = torch.zeros(len(labels), max_len, labels[0].shape[1])
+        for i, (k, l) in enumerate(zip(keypoints, labels)):
+            end = lengths[i]
+            padded_keypoints[i, :end] = k
+            padded_labels[i, :end] = l
+        return padded_keypoints, padded_labels, lab_ids, subject_ids, video_ids
+    else:
+        for i, k in enumerate(keypoints):
+            end = lengths[i]
+            padded_keypoints[i, :end] = k
+        return padded_keypoints, lab_ids, subject_ids, video_ids
 
 def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=None, num_classes=None, feature_generator=None):
     print(f"Initializing model for {'Fold ' + str(fold_idx) if fold_idx is not None else 'Single Run'}...")
@@ -142,6 +153,14 @@ def train():
         if config.get('cross_validation', {}).get('enabled', False):
             config['cross_validation']['n_folds'] = 2
         print(f"Overriding config for testing: data_dir={config['data']['data_dir']}, epochs={config['training']['epochs']}")
+
+    # Windows compatibility fix for shared memory (Error 1455)
+    import platform
+    if platform.system() == 'Windows' and config['data']['num_workers'] > 0:
+        print(f"INFO: Windows detected. Setting num_workers from {config['data']['num_workers']} to 0 to avoid shared memory issues.")
+        config['data']['num_workers'] = 0
+        # Also disable persistent_workers on Windows if num_workers is 0
+        config['data']['persistent_workers'] = False
 
     print(f"Starting Experiment: {config['experiment_name']}")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

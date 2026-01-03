@@ -83,6 +83,8 @@ class PostProcessor:
             # print(f"Lab {lab} thresholds optimized.") # Too noisy
         
         print(f"Thresholds optimized for {len(unique_labs)} labs.")
+
+    def apply_tie_breaking(self, predictions, lab_ids):
         """
         Apply tie-breaking logic when multiple classes are above threshold.
         predictions: [N, C] probabilities
@@ -97,12 +99,13 @@ class PostProcessor:
         unique_labs = np.unique(lab_ids)
         
         for lab in unique_labs:
-            if lab not in self.thresholds:
-                continue
-                
             lab_mask = (lab_ids == lab)
             lab_probs = predictions[lab_mask]
-            thresholds = self.thresholds[lab]
+            
+            if lab in self.thresholds:
+                thresholds = self.thresholds[lab]
+            else:
+                thresholds = np.full(predictions.shape[1], 0.5)
             
             # Binary mask of classes above threshold
             above_thresh = lab_probs > thresholds

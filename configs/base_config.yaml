@@ -7,9 +7,9 @@ test: false
 # Path Settings
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
-  data_dir: "data/" # Path to the directory containing train.csv and tracking/annotation folders
-  batch_size: 2048 # Increased to 2048 to fill GPU.
-  num_workers: 16 # Increased to 16 to feed the GPU.
+  data_dir: "/home/alb/WSL-Projects/mice_social_action_new/data/" # Path to the directory containing train.csv and tracking/annotation folders
+  batch_size: 512 # Increased to 2048 to fill GPU.
+  num_workers: 16 # Set to 0 on Windows to avoid Error 1455. Use 8-16 on Linux/AutoDL.
   window_size: 512
   preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
@@ -33,7 +33,7 @@ data:
     use_distances: true
     use_velocity: true
     use_acceleration: true
-    use_jerk: true # Enabled. Fast on GPU.
+    use_jerk: true 
     use_angles: true
     use_relative_angles: true
     use_window_stats: false
@@ -49,7 +49,7 @@ data:
 model:
   spatial_encoder:
     enabled: true
-    type: "st_gcn" # Options: "gat" (Graph Attention), "st_gcn" (Spatio-Temporal GCN), "identity"
+    type: "gat" # Options: "gat" (Graph Attention), "st_gcn" (Spatio-Temporal GCN), "identity"
     hidden_dim: 64
     num_layers: 2
     dropout: 0.1
@@ -89,7 +89,7 @@ training:
   torch_compile: false # Disable to save memory during startup and avoid compilation overhead
 
 cross_validation:
-  enabled: true
+  enabled: false
   n_folds: 5
 
 post_processing:
