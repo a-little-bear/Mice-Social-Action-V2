@@ -255,9 +255,9 @@ class Trainer:
                 probs = torch.sigmoid(logits)
                 
                 if collect_all:
-                    # RTX 6000 Optimization: Collect raw float32 to avoid CPU overhead of conversion/smoothing
-                    all_probs.append(probs.cpu())
-                    all_targets.append(labels.cpu())
+                    # Optimization: Store as float16 to save 50% RAM in the accumulation list
+                    all_probs.append(probs.half().cpu())
+                    all_targets.append(labels.half().cpu())
                     
                     if isinstance(lab_ids, torch.Tensor):
                         all_lab_ids.append(lab_ids.cpu())
@@ -319,22 +319,24 @@ class Trainer:
                         lab_stats[lab][:, 2] += fn.astype(np.int64)
 
         if collect_all:
-            print("\n[Post-Processing] Concatenating predictions...")
+            print("\n[Post-Processing] Concatenating predictions (Memory-efficient)...")
             
-            # Pre-allocate numpy arrays to save memory (avoid torch.cat which doubles memory)
+            # Pre-allocate numpy arrays in float16 to save memory
             N_total = sum(p.shape[0] for p in all_probs)
             T, C = all_probs[0].shape[1:]
             
-            full_probs = np.empty((N_total, T, C), dtype=np.float32)
-            full_targets = np.empty((N_total, T, C), dtype=np.float32)
+            full_probs = np.empty((N_total, T, C), dtype=np.float16)
+            full_targets = np.empty((N_total, T, C), dtype=np.float16)
             
             curr = 0
-            for p, t in zip(all_probs, all_targets):
+            while all_probs:
+                p = all_probs.pop(0)
+                t = all_targets.pop(0)
                 batch_n = p.shape[0]
                 full_probs[curr:curr+batch_n] = p.numpy()
                 full_targets[curr:curr+batch_n] = t.numpy()
                 curr += batch_n
-            
+                
             # Clear lists to free memory
             del all_probs
             del all_targets

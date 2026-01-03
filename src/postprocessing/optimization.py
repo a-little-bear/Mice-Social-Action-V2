@@ -185,21 +185,24 @@ class PostProcessor:
             return predictions
             
         if verbose:
-            print(f"Applying temporal smoothing (method: {method}) using {self.n_jobs} jobs...")
+            print(f"Applying temporal smoothing (method: {method})...")
         
+        # Ensure float32 for numerical stability during filtering
+        orig_dtype = predictions.dtype
+        if predictions.dtype == np.float16:
+            predictions = predictions.astype(np.float32)
+
         if method == 'median_filter':
             window_size = self.config['smoothing']['window_size']
             if window_size % 2 == 0: window_size += 1
             
             if predictions.ndim == 2:
-                return self._smooth_seq_median(predictions, window_size)
+                # [T, C]
+                for c in range(predictions.shape[1]):
+                    predictions[:, c] = median_filter(predictions[:, c], size=window_size)
             else:
-                # [N, T, C]
-                results = Parallel(n_jobs=self.n_jobs)(
-                    delayed(self._smooth_seq_median)(predictions[i], window_size)
-                    for i in range(predictions.shape[0])
-                )
-                return np.array(results)
+                # [N, T, C] - Vectorized median filter along T axis
+                predictions = median_filter(predictions, size=(1, window_size, 1))
             
         elif method == 'ema':
             alpha = self.config['smoothing']['alpha']
@@ -207,15 +210,22 @@ class PostProcessor:
             a = [1, -(1-alpha)]
             
             if predictions.ndim == 2:
-                return self._smooth_seq_ema(predictions, b, a)
+                # Forward
+                smoothed = lfilter(b, a, predictions, axis=0)
+                # Backward
+                smoothed_back = lfilter(b, a, np.flip(predictions, axis=0), axis=0)
+                predictions = (smoothed + np.flip(smoothed_back, axis=0)) / 2.0
             else:
-                # [N, T, C]
-                results = Parallel(n_jobs=self.n_jobs)(
-                    delayed(self._smooth_seq_ema)(predictions[i], b, a)
-                    for i in range(predictions.shape[0])
-                )
-                return np.array(results)
+                # [N, T, C] - Vectorized EMA along T axis (axis=1)
+                # Forward
+                smoothed = lfilter(b, a, predictions, axis=1)
+                # Backward
+                smoothed_back = lfilter(b, a, np.flip(predictions, axis=1), axis=1)
+                predictions = (smoothed + np.flip(smoothed_back, axis=1)) / 2.0
         
+        if orig_dtype == np.float16:
+            predictions = predictions.astype(np.float16)
+            
         return predictions
 
     def fill_gaps(self, predictions, lab_ids=None, verbose=False):
@@ -231,7 +241,7 @@ class PostProcessor:
             return predictions
             
         if verbose:
-            print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration}) using {self.n_jobs} jobs...")
+            print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration})...")
         
         def _fill_seq(seq):
             T, C = seq.shape
@@ -255,19 +265,18 @@ class PostProcessor:
 
         if lab_ids is not None:
             unique_labs = np.unique(lab_ids)
-            results = Parallel(n_jobs=self.n_jobs)(
-                delayed(_fill_seq)(predictions[lab_ids == lab]) for lab in unique_labs
-            )
+            # Sequential processing for lab-specific sequences to save memory
             final_preds = np.zeros_like(predictions)
-            for lab, filled in zip(unique_labs, results):
-                final_preds[lab_ids == lab] = filled
+            for lab in unique_labs:
+                mask = (lab_ids == lab)
+                final_preds[mask] = _fill_seq(predictions[mask])
             return final_preds
         elif predictions.ndim == 3:
-            # [N, T, C]
-            results = Parallel(n_jobs=self.n_jobs)(
-                delayed(_fill_seq)(predictions[i]) for i in range(predictions.shape[0])
-            )
-            return np.array(results)
+            # [N, T, C] - Sequential processing to save memory
+            final_preds = np.zeros_like(predictions)
+            for i in range(predictions.shape[0]):
+                final_preds[i] = _fill_seq(predictions[i])
+            return final_preds
         else:
             return _fill_seq(predictions)
 
