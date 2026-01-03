@@ -12,6 +12,7 @@ class FeatureGenerator(nn.Module):
         self.use_jerk = config.get('use_jerk', False)
         self.use_angles = config.get('use_angles', False)
         self.use_relative_angles = config.get('use_relative_angles', False)
+        self.use_body_features = config.get('use_body_features', True)
         self.use_window_stats = config.get('use_window_stats', False)
         self.window_sizes = config.get('window_sizes', [5, 15, 30])
 
@@ -39,6 +40,9 @@ class FeatureGenerator(nn.Module):
             
         if self.use_relative_angles:
             features.append(self.compute_relative_angles(x))
+
+        if self.use_body_features:
+            features.append(self.compute_body_features(x))
             
         # Concatenate all features
         return torch.cat(features, dim=-1)
@@ -82,14 +86,50 @@ class FeatureGenerator(nn.Module):
 
     def compute_angles(self, keypoints):
         # keypoints: [..., M, K, C]
-        # nose is index 0, tail_base is index 3 (based on BodyPartMapping)
+        # nose is index 0, tail_base is index 6 (based on BodyPartMapping)
         nose = keypoints[..., 0, :]
-        tail = keypoints[..., 3, :]
+        tail = keypoints[..., 6, :]
             
         vec = nose - tail
         angles = torch.atan2(vec[..., 1], vec[..., 0])
         
         return angles.unsqueeze(-1)
+
+    def compute_body_features(self, keypoints):
+        """
+        Compute body curvature and body length.
+        keypoints: [..., M, K, C]
+        Indices: 0: nose, 3: neck, 6: tail_base
+        """
+        nose = keypoints[..., 0, :]
+        neck = keypoints[..., 3, :]
+        tail = keypoints[..., 6, :]
+        
+        # 1. Body Length (Nose to Tail)
+        body_length = torch.norm(nose - tail, dim=-1, keepdim=True)
+        
+        # 2. Body Length Change (Derivative)
+        body_length_change = torch.zeros_like(body_length)
+        body_length_change[..., 1:, :] = body_length[..., 1:, :] - body_length[..., :-1, :]
+        
+        # 3. Body Curvature (Angle between nose-neck and neck-tail)
+        v1 = nose - neck
+        v2 = tail - neck
+        
+        # Normalize vectors
+        v1_norm = v1 / (torch.norm(v1, dim=-1, keepdim=True) + 1e-6)
+        v2_norm = v2 / (torch.norm(v2, dim=-1, keepdim=True) + 1e-6)
+        
+        # Dot product for cosine of angle
+        cos_angle = (v1_norm * v2_norm).sum(dim=-1, keepdim=True)
+        # Clamp for stability
+        cos_angle = torch.clamp(cos_angle, -1.0 + 1e-6, 1.0 - 1e-6)
+        curvature = torch.acos(cos_angle)
+        
+        # Reshape to [B, T, M*F]
+        B, T, M = keypoints.shape[:3]
+        res = torch.cat([body_length, body_length_change, curvature], dim=-1)
+        return res.view(B, T, -1)
 
     def compute_relative_angles(self, keypoints):
         # keypoints: [..., M, K, C]

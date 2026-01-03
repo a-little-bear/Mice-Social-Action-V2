@@ -36,6 +36,7 @@ data:
     use_jerk: true 
     use_angles: true
     use_relative_angles: true
+    use_body_features: true
     use_window_stats: false
     window_sizes: [5, 15, 30]
 
@@ -82,7 +83,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
-  loss_type: "bce" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
+  loss_type: "focal" #"bce" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
   pos_weight: 10.0 # Default weight, overridden if dynamic_pos_weight is true
   dynamic_pos_weight: true # Enabled: Calculate pos_weight per batch based on actual ratio
   ohem_percent: 0.7 # For OHEM loss
