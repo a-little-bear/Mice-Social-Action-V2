@@ -207,8 +207,14 @@ class Trainer:
         all_targets = []
         all_lab_ids = []
         
-        collect_all = self.config['post_processing'].get('optimize_thresholds', False) or \
-                      self.config['post_processing'].get('tie_breaking', 'none') != 'none'
+        # Only run full post-processing every N epochs or on the last epoch
+        eval_interval = self.config['training'].get('eval_interval', 10)
+        is_full_eval_epoch = (epoch + 1) % eval_interval == 0 or (epoch + 1) == self.config['training']['epochs']
+        
+        collect_all = is_full_eval_epoch and (
+            self.config['post_processing'].get('optimize_thresholds', False) or \
+            self.config['post_processing'].get('tie_breaking', 'none') != 'none'
+        )
         
         with torch.no_grad():
             if collect_all and self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
@@ -368,38 +374,15 @@ class Trainer:
             if self.config['post_processing'].get('optimize_thresholds', False):
                 self.post_processor.optimize_thresholds(flat_probs, flat_targets, flat_lab_ids)
             
-            # 2. Apply Tie Breaking (and implicit thresholding)
-            final_preds = self.post_processor.apply_tie_breaking(flat_probs, flat_lab_ids)
+            # 2. Apply Tie Breaking or Thresholds
+            if self.config['post_processing'].get('tie_breaking', 'none') != 'none':
+                final_preds = self.post_processor.apply_tie_breaking(flat_probs, flat_lab_ids)
+            else:
+                final_preds = self.post_processor.apply_thresholds(flat_probs, flat_lab_ids)
             
-            # If tie breaking is 'none', we still need to apply thresholds if they exist
-            if self.config['post_processing'].get('tie_breaking', 'none') == 'none':
-                print("[Post-Processing] Applying thresholds...")
-                final_preds = np.zeros(flat_probs.shape, dtype=np.uint8)
-                unique_labs = np.unique(flat_lab_ids)
-                for lab in unique_labs:
-                    lab_mask = (flat_lab_ids == lab)
-                    if lab in self.post_processor.thresholds:
-                        thresh = self.post_processor.thresholds[lab]
-                        final_preds[lab_mask] = (flat_probs[lab_mask] > thresh).astype(np.uint8)
-                    else:
-                        final_preds[lab_mask] = (flat_probs[lab_mask] > 0.5).astype(np.uint8)
-
-            # 4. Compute F1
-            print("[Post-Processing] Computing final F1 scores...")
-            # Re-aggregate by lab
-            unique_labs = np.unique(flat_lab_ids)
-            lab_scores = []
-            
-            for lab in unique_labs:
-                lab_mask = (flat_lab_ids == lab)
-                lab_p = final_preds[lab_mask]
-                lab_t = flat_targets[lab_mask]
-                
-                # Vectorized F1 for all classes
-                f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
-                lab_scores.append(np.mean(f1s))
-                
-            final_f1 = np.mean(lab_scores) if lab_scores else 0.0
+            # 3. Compute F1
+            results = self.post_processor.calculate_f1_scores(final_preds, flat_targets, flat_lab_ids)
+            final_f1 = results['overall']
             
             return final_f1, None, None
 

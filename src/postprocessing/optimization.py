@@ -2,6 +2,7 @@ import numpy as np
 from scipy.signal import lfilter
 from scipy.ndimage import binary_closing, median_filter, binary_opening
 from sklearn.metrics import f1_score
+from joblib import Parallel, delayed
 
 class PostProcessor:
     """
@@ -11,6 +12,56 @@ class PostProcessor:
         self.config = config
         self.thresholds = {} # Dictionary to store lab-specific thresholds
         self.sigmas = {} # Dictionary to store lab-specific prediction std devs (for Z-score)
+        self.n_jobs = config.get('n_jobs', -1)
+
+    def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes):
+        lab_mask = (lab_ids == lab)
+        # [N_lab, C]
+        lab_preds = predictions[lab_mask]
+        # Handle uint8 targets (1 is positive, 0 is negative, 255 is NaN)
+        lab_targets = (targets[lab_mask] == 1)
+        
+        # Calculate sigmas for all classes at once
+        # [C]
+        sigmas_per_class = np.std(lab_preds, axis=0)
+
+        # Check for positive samples per class
+        # [C]
+        has_positives = lab_targets.sum(axis=0) > 0
+        
+        # Prepare output thresholds (default 0.5)
+        best_thresh_per_class = np.full(num_classes, 0.5)
+        
+        # Only process classes with positives
+        if not np.any(has_positives):
+            return lab, best_thresh_per_class, sigmas_per_class
+
+        # Memory-efficient F1 calculation: loop over thresholds instead of expanding memory
+        # [C, K]
+        f1_scores = np.zeros((num_classes, len(threshold_range)))
+        
+        for i, th in enumerate(threshold_range):
+            # [N_lab, C]
+            preds_bool = lab_preds > th
+            
+            # Sum over samples (axis 0) -> [C]
+            tp = (preds_bool & lab_targets).sum(axis=0)
+            fp = (preds_bool & ~lab_targets).sum(axis=0)
+            fn = (~preds_bool & lab_targets).sum(axis=0)
+            
+            denom = 2 * tp + fp + fn
+            f1_scores[:, i] = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+        
+        # Best index per class: [C]
+        best_indices = np.argmax(f1_scores, axis=1)
+        
+        # Map indices to thresholds
+        optimized_thresholds = threshold_range[best_indices]
+        
+        # Restore default 0.5 for classes with no positives
+        optimized_thresholds[~has_positives] = 0.5
+        
+        return lab, optimized_thresholds, sigmas_per_class
 
     def optimize_thresholds(self, predictions, targets, lab_ids):
         """
@@ -22,67 +73,65 @@ class PostProcessor:
         if not self.config.get('optimize_thresholds', False):
             return
             
-        print("Optimizing thresholds...")
+        print(f"Optimizing thresholds using {self.n_jobs} jobs...")
         unique_labs = np.unique(lab_ids)
         num_classes = predictions.shape[1]
         
         # Grid search range
         threshold_range = np.arange(0.1, 0.95, 0.05)
         
-        for lab in unique_labs:
-            lab_mask = (lab_ids == lab)
-            # [N_lab, C]
-            lab_preds = predictions[lab_mask]
-            # Handle uint8 targets (1 is positive, 0 is negative, 255 is NaN)
-            lab_targets = (targets[lab_mask] == 1)
-            
-            # Calculate sigmas for all classes at once
-            # [C]
-            sigmas_per_class = np.std(lab_preds, axis=0)
-            self.sigmas[lab] = sigmas_per_class
-
-            # Check for positive samples per class
-            # [C]
-            has_positives = lab_targets.sum(axis=0) > 0
-            
-            # Prepare output thresholds (default 0.5)
-            best_thresh_per_class = np.full(num_classes, 0.5)
-            
-            # Only process classes with positives
-            if not np.any(has_positives):
-                self.thresholds[lab] = best_thresh_per_class
-                print(f"Lab {lab} thresholds optimized (no positives).")
-                continue
-
-            # Memory-efficient F1 calculation: loop over thresholds instead of expanding memory
-            # [C, K]
-            f1_scores = np.zeros((num_classes, len(threshold_range)))
-            
-            for i, th in enumerate(threshold_range):
-                # [N_lab, C]
-                preds_bool = lab_preds > th
-                
-                # Sum over samples (axis 0) -> [C]
-                tp = (preds_bool & lab_targets).sum(axis=0)
-                fp = (preds_bool & ~lab_targets).sum(axis=0)
-                fn = (~preds_bool & lab_targets).sum(axis=0)
-                
-                denom = 2 * tp + fp + fn
-                f1_scores[:, i] = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
-            
-            # Best index per class: [C]
-            best_indices = np.argmax(f1_scores, axis=1)
-            
-            # Map indices to thresholds
-            optimized_thresholds = threshold_range[best_indices]
-            
-            # Restore default 0.5 for classes with no positives
-            optimized_thresholds[~has_positives] = 0.5
-            
-            self.thresholds[lab] = optimized_thresholds
-            # print(f"Lab {lab} thresholds optimized.") # Too noisy
+        results = Parallel(n_jobs=self.n_jobs)(
+            delayed(self._optimize_lab)(lab, predictions, targets, lab_ids, threshold_range, num_classes)
+            for lab in unique_labs
+        )
+        
+        for lab, thresholds, sigmas in results:
+            self.thresholds[lab] = thresholds
+            self.sigmas[lab] = sigmas
         
         print(f"Thresholds optimized for {len(unique_labs)} labs.")
+
+    def _apply_tie_breaking_lab(self, lab, predictions, lab_ids, method):
+        lab_mask = (lab_ids == lab)
+        lab_probs = predictions[lab_mask]
+        
+        if lab in self.thresholds:
+            thresholds = self.thresholds[lab]
+        else:
+            thresholds = np.full(predictions.shape[1], 0.5)
+        
+        # Binary mask of classes above threshold
+        above_thresh = lab_probs > thresholds
+        
+        if method == 'argmax':
+            # Just take the max prob among those above threshold
+            masked_probs = lab_probs * above_thresh
+            max_indices = np.argmax(masked_probs, axis=1)
+            has_pred = above_thresh.any(axis=1)
+            
+            # Create one-hot (using uint8)
+            lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
+            lab_final[np.arange(len(lab_probs)), max_indices] = 1
+            lab_final[~has_pred] = 0
+            
+        elif method == 'z_score':
+            sigmas = self.sigmas.get(lab, np.ones_like(thresholds))
+            sigmas = np.maximum(sigmas, 1e-6)
+            
+            z_scores = (lab_probs - thresholds) / sigmas
+            
+            # Only consider those above threshold
+            masked_z = z_scores.copy()
+            masked_z[~above_thresh] = -np.inf
+            
+            max_indices = np.argmax(masked_z, axis=1)
+            has_pred = above_thresh.any(axis=1)
+            
+            lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
+            lab_final[np.arange(len(lab_probs)), max_indices] = 1
+            lab_final[~has_pred] = 0
+            
+        return lab_mask, lab_final
 
     def apply_tie_breaking(self, predictions, lab_ids):
         """
@@ -94,55 +143,35 @@ class PostProcessor:
         if method == 'none':
             return predictions
             
-        print(f"Applying tie-breaking (method: {method})...")
+        print(f"Applying tie-breaking (method: {method}) using {self.n_jobs} jobs...")
         final_preds = np.zeros(predictions.shape, dtype=np.uint8)
         unique_labs = np.unique(lab_ids)
         
-        for lab in unique_labs:
-            lab_mask = (lab_ids == lab)
-            lab_probs = predictions[lab_mask]
-            
-            if lab in self.thresholds:
-                thresholds = self.thresholds[lab]
-            else:
-                thresholds = np.full(predictions.shape[1], 0.5)
-            
-            # Binary mask of classes above threshold
-            above_thresh = lab_probs > thresholds
-            
-            if method == 'argmax':
-                # Just take the max prob among those above threshold
-                masked_probs = lab_probs * above_thresh
-                max_indices = np.argmax(masked_probs, axis=1)
-                has_pred = above_thresh.any(axis=1)
-                
-                # Create one-hot (using uint8)
-                lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
-                lab_final[np.arange(len(lab_probs)), max_indices] = 1
-                lab_final[~has_pred] = 0
-                
-                final_preds[lab_mask] = lab_final
-                
-            elif method == 'z_score':
-                sigmas = self.sigmas.get(lab, np.ones_like(thresholds))
-                sigmas = np.maximum(sigmas, 1e-6)
-                
-                z_scores = (lab_probs - thresholds) / sigmas
-                
-                # Only consider those above threshold
-                masked_z = z_scores.copy()
-                masked_z[~above_thresh] = -np.inf
-                
-                max_indices = np.argmax(masked_z, axis=1)
-                has_pred = above_thresh.any(axis=1)
-                
-                lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
-                lab_final[np.arange(len(lab_probs)), max_indices] = 1
-                lab_final[~has_pred] = 0
-                
-                final_preds[lab_mask] = lab_final
+        results = Parallel(n_jobs=self.n_jobs)(
+            delayed(self._apply_tie_breaking_lab)(lab, predictions, lab_ids, method)
+            for lab in unique_labs
+        )
+        
+        for lab_mask, lab_final in results:
+            final_preds[lab_mask] = lab_final
                 
         return final_preds
+
+    def _smooth_seq_median(self, seq, window_size):
+        # seq: [T, C]
+        for c in range(seq.shape[1]):
+            seq[:, c] = median_filter(seq[:, c], size=window_size)
+        return seq
+
+    def _smooth_seq_ema(self, seq, b, a):
+        # seq: [T, C]
+        # Forward
+        smoothed = lfilter(b, a, seq, axis=0)
+        # Backward
+        predictions_flipped = np.flip(seq, axis=0)
+        smoothed_back = lfilter(b, a, predictions_flipped, axis=0)
+        smoothed_back = np.flip(smoothed_back, axis=0)
+        return (smoothed + smoothed_back) / 2.0
 
     def apply_smoothing(self, predictions, verbose=False):
         """
@@ -155,67 +184,43 @@ class PostProcessor:
             return predictions
             
         if verbose:
-            print(f"Applying temporal smoothing (method: {method})...")
-        # Determine time axis
-        if predictions.ndim == 2:
-            # [T, C]
-            time_axis = 0
-        elif predictions.ndim == 3:
-            # [N, T, C]
-            time_axis = 1
-        else:
-            return predictions
-
+            print(f"Applying temporal smoothing (method: {method}) using {self.n_jobs} jobs...")
+        
         if method == 'median_filter':
             window_size = self.config['smoothing']['window_size']
             if window_size % 2 == 0: window_size += 1
             
-            # Process sequence by sequence to save memory
             if predictions.ndim == 2:
-                # [T, C]
-                for c in range(predictions.shape[1]):
-                    predictions[:, c] = median_filter(predictions[:, c], size=window_size)
-                return predictions
+                return self._smooth_seq_median(predictions, window_size)
             else:
                 # [N, T, C]
-                for i in range(predictions.shape[0]):
-                    for c in range(predictions.shape[2]):
-                        predictions[i, :, c] = median_filter(predictions[i, :, c], size=window_size)
-                return predictions
+                results = Parallel(n_jobs=self.n_jobs)(
+                    delayed(self._smooth_seq_median)(predictions[i], window_size)
+                    for i in range(predictions.shape[0])
+                )
+                return np.array(results)
             
         elif method == 'ema':
             alpha = self.config['smoothing']['alpha']
             b = [alpha]
             a = [1, -(1-alpha)]
             
-            # Process sequence by sequence to save memory
             if predictions.ndim == 2:
-                # [T, C]
-                # Forward
-                smoothed = lfilter(b, a, predictions, axis=0)
-                # Backward
-                predictions_flipped = np.flip(predictions, axis=0)
-                smoothed_back = lfilter(b, a, predictions_flipped, axis=0)
-                smoothed_back = np.flip(smoothed_back, axis=0)
-                return (smoothed + smoothed_back) / 2.0
+                return self._smooth_seq_ema(predictions, b, a)
             else:
                 # [N, T, C]
-                for i in range(predictions.shape[0]):
-                    # Forward
-                    smoothed = lfilter(b, a, predictions[i], axis=0)
-                    # Backward
-                    predictions_flipped = np.flip(predictions[i], axis=0)
-                    smoothed_back = lfilter(b, a, predictions_flipped, axis=0)
-                    smoothed_back = np.flip(smoothed_back, axis=0)
-                    predictions[i] = (smoothed + smoothed_back) / 2.0
-                return predictions
+                results = Parallel(n_jobs=self.n_jobs)(
+                    delayed(self._smooth_seq_ema)(predictions[i], b, a)
+                    for i in range(predictions.shape[0])
+                )
+                return np.array(results)
         
         return predictions
 
-    def fill_gaps(self, predictions, verbose=False):
+    def fill_gaps(self, predictions, lab_ids=None, verbose=False):
         """
         Fill short gaps and remove short bursts in binary predictions.
-        predictions: [T, C] binary
+        predictions: [N, C] binary or [T, C] binary
         """
         gap_config = self.config.get('gap_filling', {})
         max_gap = gap_config.get('max_gap', 0)
@@ -225,25 +230,45 @@ class PostProcessor:
             return predictions
             
         if verbose:
-            print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration})...")
-        T, C = predictions.shape
-        # Pad with 1s to fill boundary gaps
-        padded = np.ones((T + 2, C), dtype=predictions.dtype)
-        padded[1:-1, :] = predictions
+            print(f"Applying gap filling (max_gap: {max_gap}, min_duration: {min_duration}) using {self.n_jobs} jobs...")
         
-        filled = padded
-        
-        # 1. Fill gaps (0s between 1s) -> binary_closing
-        if max_gap > 0:
-            structure = np.ones((max_gap + 1, 1))
-            filled = binary_closing(filled, structure=structure)
+        def _fill_seq(seq):
+            T, C = seq.shape
+            # Pad with 1s to fill boundary gaps
+            padded = np.ones((T + 2, C), dtype=seq.dtype)
+            padded[1:-1, :] = seq
             
-        # 2. Remove short bursts (1s between 0s) -> binary_opening
-        if min_duration > 0:
-            structure = np.ones((min_duration, 1))
-            filled = binary_opening(filled, structure=structure)
-        
-        return filled[1:-1, :].astype(predictions.dtype)
+            filled = padded
+            
+            # 1. Fill gaps (0s between 1s) -> binary_closing
+            if max_gap > 0:
+                structure = np.ones((max_gap + 1, 1))
+                filled = binary_closing(filled, structure=structure)
+                
+            # 2. Remove short bursts (1s between 0s) -> binary_opening
+            if min_duration > 0:
+                structure = np.ones((min_duration, 1))
+                filled = binary_opening(filled, structure=structure)
+            
+            return filled[1:-1, :].astype(seq.dtype)
+
+        if lab_ids is not None:
+            unique_labs = np.unique(lab_ids)
+            results = Parallel(n_jobs=self.n_jobs)(
+                delayed(_fill_seq)(predictions[lab_ids == lab]) for lab in unique_labs
+            )
+            final_preds = np.zeros_like(predictions)
+            for lab, filled in zip(unique_labs, results):
+                final_preds[lab_ids == lab] = filled
+            return final_preds
+        elif predictions.ndim == 3:
+            # [N, T, C]
+            results = Parallel(n_jobs=self.n_jobs)(
+                delayed(_fill_seq)(predictions[i]) for i in range(predictions.shape[0])
+            )
+            return np.array(results)
+        else:
+            return _fill_seq(predictions)
 
     def apply_z_score_tie_breaking(self, probs, thresholds, oof_stats):
         """
@@ -265,6 +290,61 @@ class PostProcessor:
         # Select class with highest Z-score
         final_preds = np.argmax(z_scores, axis=1)
         return final_preds
+
+    def apply_thresholds(self, predictions, lab_ids):
+        """
+        Apply thresholds to predictions.
+        predictions: [N, C] probabilities
+        lab_ids: [N]
+        """
+        print(f"Applying thresholds using {self.n_jobs} jobs...")
+        final_preds = np.zeros(predictions.shape, dtype=np.uint8)
+        unique_labs = np.unique(lab_ids)
+        
+        def _apply_lab_thresh(lab):
+            mask = (lab_ids == lab)
+            lab_preds = predictions[mask]
+            if lab in self.thresholds:
+                thresh = self.thresholds[lab]
+                return mask, (lab_preds > thresh).astype(np.uint8)
+            else:
+                return mask, (lab_preds > 0.5).astype(np.uint8)
+        
+        results = Parallel(n_jobs=self.n_jobs)(
+            delayed(_apply_lab_thresh)(lab) for lab in unique_labs
+        )
+        
+        for mask, lab_binary in results:
+            final_preds[mask] = lab_binary
+            
+        return final_preds
+
+    def calculate_f1_scores(self, predictions, targets, lab_ids):
+        """
+        Calculate F1 scores per lab and overall.
+        predictions: [N, C] binary
+        targets: [N, C] binary
+        lab_ids: [N]
+        """
+        print(f"Calculating F1 scores using {self.n_jobs} jobs...")
+        unique_labs = np.unique(lab_ids)
+        
+        def _calc_lab_f1(lab):
+            mask = (lab_ids == lab)
+            lab_p = predictions[mask]
+            lab_t = targets[mask]
+            # Vectorized F1 for all classes
+            f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
+            return lab, np.mean(f1s)
+            
+        results = Parallel(n_jobs=self.n_jobs)(
+            delayed(_calc_lab_f1)(lab) for lab in unique_labs
+        )
+        
+        lab_f1s = {lab: f1 for lab, f1 in results}
+        lab_f1s['overall'] = np.mean([f1 for f1 in lab_f1s.values()])
+        
+        return lab_f1s
 
     def __call__(self, predictions, lab_ids=None, oof_stats=None):
         # predictions: [N, C] probabilities

@@ -78,6 +78,7 @@ model:
 training:
   optimizer: "fused_adamw"
   epochs: 50
+  eval_interval: 10
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
@@ -94,6 +95,7 @@ cross_validation:
   n_folds: 5
 
 post_processing:
+  n_jobs: -1
   optimize_thresholds: true
   tie_breaking: "z_score" # Options: "none", "z_score", "argmax"
   smoothing:
