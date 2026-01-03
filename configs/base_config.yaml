@@ -8,7 +8,7 @@ test: false
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
   data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
-  batch_size: 4096 # Increased for RTX 6000 96GB.
+  batch_size: 2048 # Increased for RTX 6000 96GB.
   num_workers: 2 # Increased for AutoDL high-core count.
   window_size: 512
   preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
