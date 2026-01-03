@@ -176,7 +176,7 @@ class PostProcessor:
 
     def apply_smoothing(self, predictions, verbose=False):
         """
-        Apply temporal smoothing (EMA or Median).
+        Apply temporal smoothing (EMA or Median) in-place to save memory.
         predictions: [T, C] or [N, T, C]
         """
         method = self.config.get('smoothing', {}).get('method', 'none')
@@ -185,46 +185,54 @@ class PostProcessor:
             return predictions
             
         if verbose:
-            print(f"Applying temporal smoothing (method: {method})...")
+            print(f"Applying temporal smoothing (method: {method}) in-place...")
         
-        # Ensure float32 for numerical stability during filtering
         orig_dtype = predictions.dtype
-        if predictions.dtype == np.float16:
-            predictions = predictions.astype(np.float32)
-
-        if method == 'median_filter':
-            window_size = self.config['smoothing']['window_size']
-            if window_size % 2 == 0: window_size += 1
-            
-            if predictions.ndim == 2:
-                # [T, C]
-                for c in range(predictions.shape[1]):
-                    predictions[:, c] = median_filter(predictions[:, c], size=window_size)
-            else:
-                # [N, T, C] - Vectorized median filter along T axis
-                predictions = median_filter(predictions, size=(1, window_size, 1))
-            
-        elif method == 'ema':
-            alpha = self.config['smoothing']['alpha']
-            b = [alpha]
-            a = [1, -(1-alpha)]
-            
-            if predictions.ndim == 2:
-                # Forward
-                smoothed = lfilter(b, a, predictions, axis=0)
-                # Backward
-                smoothed_back = lfilter(b, a, np.flip(predictions, axis=0), axis=0)
-                predictions = (smoothed + np.flip(smoothed_back, axis=0)) / 2.0
-            else:
-                # [N, T, C] - Vectorized EMA along T axis (axis=1)
-                # Forward
-                smoothed = lfilter(b, a, predictions, axis=1)
-                # Backward
-                smoothed_back = lfilter(b, a, np.flip(predictions, axis=1), axis=1)
-                predictions = (smoothed + np.flip(smoothed_back, axis=1)) / 2.0
         
-        if orig_dtype == np.float16:
-            predictions = predictions.astype(np.float16)
+        # Process in chunks to avoid massive float32 conversion OOM
+        # Each chunk is converted to float32, smoothed, and converted back to orig_dtype
+        chunk_size = 500 # Process 500 windows at a time
+        
+        if predictions.ndim == 2:
+            # Single sequence [T, C]
+            temp = predictions.astype(np.float32)
+            if method == 'median_filter':
+                window_size = self.config['smoothing']['window_size']
+                if window_size % 2 == 0: window_size += 1
+                for c in range(temp.shape[1]):
+                    temp[:, c] = median_filter(temp[:, c], size=window_size)
+            elif method == 'ema':
+                alpha = self.config['smoothing']['alpha']
+                b, a = [alpha], [1, -(1-alpha)]
+                smoothed = lfilter(b, a, temp, axis=0)
+                smoothed_back = lfilter(b, a, np.flip(temp, axis=0), axis=0)
+                temp = (smoothed + np.flip(smoothed_back, axis=0)) / 2.0
+            predictions[:] = temp.astype(orig_dtype)
+            
+        else:
+            # Multiple windows [N, T, C]
+            N = predictions.shape[0]
+            for i in range(0, N, chunk_size):
+                end = min(i + chunk_size, N)
+                # Convert only the chunk to float32
+                chunk = predictions[i:end].astype(np.float32)
+                
+                if method == 'median_filter':
+                    window_size = self.config['smoothing']['window_size']
+                    if window_size % 2 == 0: window_size += 1
+                    chunk = median_filter(chunk, size=(1, window_size, 1))
+                elif method == 'ema':
+                    alpha = self.config['smoothing']['alpha']
+                    b, a = [alpha], [1, -(1-alpha)]
+                    smoothed = lfilter(b, a, chunk, axis=1)
+                    smoothed_back = lfilter(b, a, np.flip(chunk, axis=1), axis=1)
+                    chunk = (smoothed + np.flip(smoothed_back, axis=1)) / 2.0
+                
+                # Write back to original array in original dtype
+                predictions[i:end] = chunk.astype(orig_dtype)
+                
+                if i % (chunk_size * 5) == 0 and verbose:
+                    print(f"  Processed {end}/{N} windows...")
             
         return predictions
 

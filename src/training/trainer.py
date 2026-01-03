@@ -350,8 +350,9 @@ class Trainer:
             # N_total, T, C = full_probs.shape # Already defined above
             
             # Flatten for processing: [N*T, C]
-            flat_probs = full_probs.reshape(-1, C)
-            flat_targets = full_targets.reshape(-1, C)
+            # These are views, they don't use extra memory yet
+            flat_probs_view = full_probs.reshape(-1, C)
+            flat_targets_view = full_targets.reshape(-1, C)
             
             # Handle lab_ids
             if len(all_lab_ids) > 0 and isinstance(all_lab_ids[0], torch.Tensor):
@@ -361,15 +362,25 @@ class Trainer:
             
             # Expand lab_ids to match flattened shape
             flat_lab_ids = np.repeat(full_lab_ids, T)
+            del full_lab_ids
             
-            # Clear large arrays to free memory
-            del full_probs, full_targets, full_lab_ids
+            # Mask invalid frames (Memory-critical step)
+            print("[Post-Processing] Masking invalid frames...")
+            valid_mask = ~np.isnan(flat_targets_view).any(axis=-1)
+            
+            # 1. Filter Probs and free original
+            flat_probs = flat_probs_view[valid_mask]
+            del full_probs
             gc.collect()
             
-            # Mask invalid frames using the new memory-efficient method
-            flat_probs, flat_targets, flat_lab_ids = self.post_processor.apply_masking(
-                flat_probs, flat_targets, flat_lab_ids
-            )
+            # 2. Filter Targets and free original
+            flat_targets = flat_targets_view[valid_mask]
+            del full_targets
+            gc.collect()
+            
+            # 3. Filter Lab IDs
+            flat_lab_ids = flat_lab_ids[valid_mask]
+            gc.collect()
             
             # 1. Optimize Thresholds
             if self.config['post_processing'].get('optimize_thresholds', False):
