@@ -343,6 +343,10 @@ class MABeDataset(Dataset):
                     MABeDataset._video_cache.pop(next(it))
                 except (StopIteration, KeyError):
                     pass
+            
+            # Optimization: Store as bfloat16 torch tensor to save 50% RAM
+            # bfloat16 is ideal for RTX 6000 and preserves dynamic range better than float16
+            keypoints = torch.from_numpy(keypoints).to(torch.bfloat16)
             MABeDataset._video_cache[cache_key] = keypoints
             
             return keypoints
@@ -376,7 +380,13 @@ class MABeDataset(Dataset):
             keypoints = np.zeros((self.window_size, keypoints_full.shape[1], keypoints_full.shape[2], 2), dtype=np.float32)
         else:
             actual_end = min(end, T_full)
-            keypoints_slice = keypoints_full[start:actual_end]
+            
+            # Handle bfloat16 torch tensor from cache
+            if isinstance(keypoints_full, torch.Tensor):
+                # Slice first, then convert to float32 numpy for transforms
+                keypoints_slice = keypoints_full[start:actual_end].to(torch.float32).numpy()
+            else:
+                keypoints_slice = keypoints_full[start:actual_end]
             
             if actual_end < end:
                 pad_len = end - actual_end

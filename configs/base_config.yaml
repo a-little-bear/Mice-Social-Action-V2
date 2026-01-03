@@ -13,7 +13,7 @@ data:
   window_size: 512
   preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
-  prefetch_factor: 4
+  prefetch_factor: 2
   persistent_workers: true
   cache_size: 8 # Ignored when preload is true.
   
@@ -79,7 +79,7 @@ model:
 training:
   optimizer: "fused_adamw"
   epochs: 50
-  eval_interval: 10
+  eval_interval: 1
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
