@@ -8,12 +8,12 @@ test: false
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
   data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
-  batch_size: 512 # Increased to 2048 to fill GPU.
-  num_workers: 16 # Set to 0 on Windows to avoid Error 1455. Use 8-16 on Linux/AutoDL.
+  batch_size: 2048 # Increased for RTX 6000 96GB.
+  num_workers: 16 # Increased for AutoDL high-core count.
   window_size: 512
   preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
-  prefetch_factor: 2
+  prefetch_factor: 4
   persistent_workers: true
   cache_size: 8 # Ignored when preload is true.
   
@@ -86,7 +86,7 @@ training:
   ohem_percent: 0.7 # For OHEM loss
   mask_unlabeled: true
   save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
-  torch_compile: false # Disable to save memory during startup and avoid compilation overhead
+  torch_compile: true # Enabled for RTX 6000 to maximize throughput.
 
 cross_validation:
   enabled: false

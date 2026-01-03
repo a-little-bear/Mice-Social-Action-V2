@@ -3,11 +3,13 @@ import torch.nn as nn
 from .encoders.temporal import TemporalEncoder
 from .encoders.spatial import SpatialGNN
 from .components.lca import LabContextAdapter
+from src.data.features import FeatureGenerator
 
 class HHSTFModel(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, feature_generator=None):
         super().__init__()
         self.config = config
+        self.feature_generator = feature_generator
         
         self.spatial_encoder = None
         if config['spatial_encoder']['enabled']:
@@ -41,6 +43,10 @@ class HHSTFModel(nn.Module):
             self.two_stage_head = nn.Linear(fusion_dim, 1)
 
     def forward(self, x, lab_ids=None, subject_ids=None):
+        # Generate features on GPU if generator is provided
+        if self.feature_generator:
+            x = self.feature_generator(x)
+            
         if self.spatial_encoder:
             B, T, F = x.shape
             # adj = torch.eye(F).to(x.device).unsqueeze(0).expand(B*T, -1, -1)

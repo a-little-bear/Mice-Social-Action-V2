@@ -92,11 +92,7 @@ class Trainer:
                 print(f"  Labels Mean (ignoring NaNs): {torch.nanmean(labels).item()}")
                 first_batch = False
             
-            # Generate features on GPU
-            if self.feature_generator:
-                features = self.feature_generator(keypoints)
-            else:
-                features = keypoints
+            # Features are now generated inside the model's forward pass
             
             # Convert lab_ids and subject_ids to tensors if they aren't already
             # This avoids graph breaks in torch.compile
@@ -135,7 +131,7 @@ class Trainer:
                     self.criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=new_pos_weight)
 
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                outputs = self.model(features, lab_ids, subject_ids)
+                outputs = self.model(keypoints, lab_ids, subject_ids)
                 
                 # Compute mask early
                 mask = None
@@ -235,12 +231,6 @@ class Trainer:
                 
                 keypoints = keypoints.to(self.device)
                 
-                # Generate features on GPU
-                if self.feature_generator:
-                    features = self.feature_generator(keypoints)
-                else:
-                    features = keypoints
-                
                 # Convert lab_ids and subject_ids to tensors for the model
                 if not isinstance(lab_ids, torch.Tensor):
                     model_to_check = self.model
@@ -261,7 +251,7 @@ class Trainer:
                 else:
                     subject_ids_dev = subject_ids.to(self.device)
                 
-                outputs = self.model(features, lab_ids_dev, subject_ids_dev)
+                outputs = self.model(keypoints, lab_ids_dev, subject_ids_dev)
                 if isinstance(outputs, tuple):
                     logits, _ = outputs
                 else:
@@ -270,32 +260,13 @@ class Trainer:
                 probs = torch.sigmoid(logits)
                 
                 if collect_all:
-                    # Move to CPU and collect with reduced precision to save RAM
-                    # [B, T, C]
-                    p_cpu = probs.cpu()
-                    
-                    # Apply smoothing per batch if enabled to avoid storing raw probs
-                    if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
-                        p_np = p_cpu.numpy()
-                        p_smoothed = self.post_processor.apply_smoothing(p_np)
-                        all_probs.append(p_smoothed.astype(np.float16))
-                    else:
-                        all_probs.append(p_cpu.numpy().astype(np.float16))
-                        
-                    # Store targets as uint8 (0, 1, or 255 for NaN)
-                    t_np = labels.cpu().numpy()
-                    t_uint8 = np.full(t_np.shape, 255, dtype=np.uint8)
-                    mask_0 = t_np == 0
-                    mask_1 = t_np == 1
-                    t_uint8[mask_0] = 0
-                    t_uint8[mask_1] = 1
-                    all_targets.append(t_uint8)
+                    # RTX 6000 Optimization: Collect raw float32 to avoid CPU overhead of conversion/smoothing
+                    all_probs.append(probs.cpu())
+                    all_targets.append(labels.cpu())
                     
                     if isinstance(lab_ids, torch.Tensor):
                         all_lab_ids.append(lab_ids.cpu())
                     else:
-                        # Repeat lab_id for each item in batch if it's a list of strings
-                        # Actually lab_ids is a tuple of size B
                         all_lab_ids.extend(lab_ids)
                 else:
                     # Incremental stats (Fast, Low Memory)
@@ -353,28 +324,24 @@ class Trainer:
                         lab_stats[lab][:, 2] += fn.astype(np.int64)
 
         if collect_all:
-            # Concatenate using a memory-efficient approach
-            print("\n[Post-Processing] Collecting and concatenating predictions (Memory-Efficient)...")
-            
-            N_total = sum(p.shape[0] for p in all_probs)
-            T, C = all_probs[0].shape[1], all_probs[0].shape[2]
-            
-            full_probs = np.empty((N_total, T, C), dtype=np.float16)
-            full_targets = np.empty((N_total, T, C), dtype=np.uint8) 
-            
-            curr = 0
-            for p_half, t_uint in zip(all_probs, all_targets):
-                batch_size = p_half.shape[0]
-                full_probs[curr:curr+batch_size] = p_half
-                full_targets[curr:curr+batch_size] = t_uint
-                curr += batch_size
+            print("\n[Post-Processing] Concatenating predictions...")
+            # Use torch.cat for fast concatenation on CPU
+            full_probs = torch.cat(all_probs, dim=0).numpy()
+            full_targets = torch.cat(all_targets, dim=0).numpy()
             
             # Clear lists to free memory
             del all_probs
             del all_targets
             gc.collect()
             
-            # Flatten for processing: [N*T, C] (Use views to save memory)
+            # Apply smoothing once on the full dataset if enabled
+            if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
+                print(f"[Post-Processing] Applying smoothing to full validation set...")
+                full_probs = self.post_processor.apply_smoothing(full_probs, verbose=True)
+
+            N_total, T, C = full_probs.shape
+            
+            # Flatten for processing: [N*T, C]
             flat_probs = full_probs.reshape(-1, C)
             flat_targets = full_targets.reshape(-1, C)
             
@@ -389,18 +356,13 @@ class Trainer:
             
             # Mask invalid frames
             print("[Post-Processing] Masking invalid frames...")
-            # 255 is our NaN marker in uint8
-            valid_mask = (flat_targets != 255).all(axis=-1)
+            # Use np.isnan check since we are now using float32 targets
+            valid_mask = ~np.isnan(flat_targets).any(axis=-1)
             
-            # Filter (This creates copies, so we must be careful)
+            # Filter
             flat_probs = flat_probs[valid_mask]
             flat_targets = flat_targets[valid_mask]
             flat_lab_ids = flat_lab_ids[valid_mask]
-            
-            # Now safe to delete the original 3D arrays
-            del full_probs
-            del full_targets
-            gc.collect()
             
             # 1. Optimize Thresholds
             if self.config['post_processing'].get('optimize_thresholds', False):
@@ -421,10 +383,6 @@ class Trainer:
                         final_preds[lab_mask] = (flat_probs[lab_mask] > thresh).astype(np.uint8)
                     else:
                         final_preds[lab_mask] = (flat_probs[lab_mask] > 0.5).astype(np.uint8)
-
-            # 3. Gap Filling (Skip in flattened validation to save time/memory and avoid logic error)
-            # Gap filling should only be done on continuous time series, not flattened windows.
-            # final_preds = self.post_processor.fill_gaps(final_preds)
 
             # 4. Compute F1
             print("[Post-Processing] Computing final F1 scores...")

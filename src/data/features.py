@@ -1,8 +1,10 @@
 import torch
+import torch.nn as nn
 import numpy as np
 
-class FeatureGenerator:
+class FeatureGenerator(nn.Module):
     def __init__(self, config):
+        super().__init__()
         self.config = config
         self.use_velocity = config.get('use_velocity', True)
         self.use_acceleration = config.get('use_acceleration', True)
@@ -12,6 +14,34 @@ class FeatureGenerator:
         self.use_relative_angles = config.get('use_relative_angles', False)
         self.use_window_stats = config.get('use_window_stats', False)
         self.window_sizes = config.get('window_sizes', [5, 15, 30])
+
+    def forward(self, x):
+        """
+        x: [B, T, M, K, C] keypoints
+        Returns: [B, T, F] features
+        """
+        features = []
+        
+        if self.use_distances:
+            features.append(self.compute_distances(x))
+            
+        if self.use_velocity or self.use_acceleration or self.use_jerk:
+            v, a, j = self.compute_derivatives(x)
+            if self.use_velocity:
+                features.append(v.reshape(v.shape[0], v.shape[1], -1))
+            if self.use_acceleration:
+                features.append(a.reshape(a.shape[0], a.shape[1], -1))
+            if self.use_jerk:
+                features.append(j.reshape(j.shape[0], j.shape[1], -1))
+                
+        if self.use_angles:
+            features.append(self.compute_angles(x))
+            
+        if self.use_relative_angles:
+            features.append(self.compute_relative_angles(x))
+            
+        # Concatenate all features
+        return torch.cat(features, dim=-1)
 
     def compute_distances(self, keypoints):
         # keypoints: [T, M, K, C] or [B, T, M, K, C]

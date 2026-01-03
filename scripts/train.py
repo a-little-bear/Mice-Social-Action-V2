@@ -71,15 +71,15 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     if num_classes:
         config['model']['classifier']['num_classes'] = num_classes
 
-    model = HHSTFModel(config['model'])
+    model = HHSTFModel(config['model'], feature_generator=feature_generator)
     model = model.to(device)
 
     # Optimization: torch.compile
     if not config.get('test', False) and config['training'].get('torch_compile', True):
         try:
-            print("Compiling model with torch.compile...")
-            # Use reduce-overhead for better stability than max-autotune
-            model = torch.compile(model, mode="reduce-overhead")
+            print("Compiling model with torch.compile (mode=max-autotune for RTX 6000)...")
+            # Use max-autotune for RTX 6000 to get best performance
+            model = torch.compile(model, mode="max-autotune")
         except Exception as e:
             print(f"Compilation failed, fallback to eager mode: {e}")
     else:
