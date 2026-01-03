@@ -8,8 +8,8 @@ test: false
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
   data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
-  batch_size: 2048 # Increased for RTX 6000 96GB.
-  num_workers: 4 # Increased for AutoDL high-core count.
+  batch_size: 4096 # Increased for RTX 6000 96GB.
+  num_workers: 2 # Increased for AutoDL high-core count.
   window_size: 512
   preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
@@ -58,19 +58,19 @@ model:
   temporal_backbone:
     type: "squeezeformer" # Options: "squeezeformer" (Attention+Conv), "wavenet" (Dilated Conv), "transformer", "multi_scale_cnn"
     input_dim: 0 # Will be set dynamically in train.py
-    hidden_dim: 256
-    num_layers: 6
+    hidden_dim: 512 #256
+    num_layers: 8 #6
     kernel_size: 3
     dropout: 0.2
-    transformer_heads: 8
+    transformer_heads: 16 #8
     
   fusion:
     type: "attention" # Options: "attention" (Weighted Sum), "concat" (Concatenation), "gated"
-    hidden_dim: 512
+    hidden_dim: 1024 #512
     
   classifier:
     num_classes: 76 # Interaction, Investigation, Other
-    hidden_dim: 256
+    hidden_dim: 512 #256
     
   context_adapter:
     enabled: true
@@ -89,7 +89,7 @@ training:
   ohem_percent: 0.7 # For OHEM loss
   mask_unlabeled: true
   save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
-  torch_compile: false # Enabled for RTX 6000 to maximize throughput.
+  torch_compile: true # Enabled for RTX 6000 to maximize throughput.
 
 cross_validation:
   enabled: false
