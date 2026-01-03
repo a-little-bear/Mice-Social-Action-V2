@@ -362,7 +362,6 @@ class Trainer:
             
             # Clear large arrays to free memory
             del full_probs, full_targets, full_lab_ids
-            import gc
             gc.collect()
             
             # Mask invalid frames using the new memory-efficient method

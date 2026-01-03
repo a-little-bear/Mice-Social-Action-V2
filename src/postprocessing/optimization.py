@@ -1,4 +1,5 @@
 import numpy as np
+import gc
 from scipy.signal import lfilter
 from scipy.ndimage import binary_closing, median_filter, binary_opening
 from sklearn.metrics import f1_score
@@ -380,7 +381,6 @@ class PostProcessor:
         targets = targets[valid_mask]
         lab_ids = lab_ids[valid_mask]
         
-        import gc
         gc.collect()
         
         return predictions, targets, lab_ids
