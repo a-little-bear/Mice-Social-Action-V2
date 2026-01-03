@@ -360,15 +360,15 @@ class Trainer:
             # Expand lab_ids to match flattened shape
             flat_lab_ids = np.repeat(full_lab_ids, T)
             
-            # Mask invalid frames
-            print("[Post-Processing] Masking invalid frames...")
-            # Use np.isnan check since we are now using float32 targets
-            valid_mask = ~np.isnan(flat_targets).any(axis=-1)
+            # Clear large arrays to free memory
+            del full_probs, full_targets, full_lab_ids
+            import gc
+            gc.collect()
             
-            # Filter
-            flat_probs = flat_probs[valid_mask]
-            flat_targets = flat_targets[valid_mask]
-            flat_lab_ids = flat_lab_ids[valid_mask]
+            # Mask invalid frames using the new memory-efficient method
+            flat_probs, flat_targets, flat_lab_ids = self.post_processor.apply_masking(
+                flat_probs, flat_targets, flat_lab_ids
+            )
             
             # 1. Optimize Thresholds
             if self.config['post_processing'].get('optimize_thresholds', False):
@@ -383,6 +383,11 @@ class Trainer:
             # 3. Compute F1
             results = self.post_processor.calculate_f1_scores(final_preds, flat_targets, flat_lab_ids)
             final_f1 = results['overall']
+            
+            # Final cleanup
+            del flat_probs, flat_targets, flat_lab_ids, final_preds
+            gc.collect()
+            torch.cuda.empty_cache()
             
             return final_f1, None, None
 

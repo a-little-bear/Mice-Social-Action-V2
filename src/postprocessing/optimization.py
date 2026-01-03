@@ -367,6 +367,24 @@ class PostProcessor:
         # For now, we ensure the logic is available for the submission script.
         return final_preds
 
+    def apply_masking(self, predictions, targets, lab_ids):
+        """
+        Memory-efficient masking of invalid frames.
+        """
+        print("[Post-Processing] Masking invalid frames (Memory-efficient)...")
+        # Use np.isnan check since we are now using float32 targets
+        valid_mask = ~np.isnan(targets).any(axis=-1)
+        
+        # Filter
+        predictions = predictions[valid_mask]
+        targets = targets[valid_mask]
+        lab_ids = lab_ids[valid_mask]
+        
+        import gc
+        gc.collect()
+        
+        return predictions, targets, lab_ids
+
     def __call__(self, predictions, lab_ids=None, oof_stats=None):
         # predictions: [N, C] probabilities
         

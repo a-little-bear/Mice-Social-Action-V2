@@ -236,6 +236,10 @@ class FeatureGenerator(nn.Module):
             # Total pairs = M * (M - 1)
             dim += num_mice * (num_mice - 1) * 2
             
+        if self.use_body_features:
+            # body_length, body_length_change, curvature for each mouse
+            dim += num_mice * 3
+            
         if self.use_window_stats:
             base_dim = dim
             num_stats = 2 * len(self.window_sizes)
@@ -274,6 +278,9 @@ class FeatureGenerator(nn.Module):
             
         if self.use_relative_angles:
             feature_list.append(self.compute_relative_angles(keypoints).view(*orig_shape_flat))
+
+        if self.use_body_features:
+            feature_list.append(self.compute_body_features(keypoints))
             
         combined_features = torch.cat(feature_list, dim=-1)
         
