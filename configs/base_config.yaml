@@ -7,7 +7,7 @@ test: false
 # Path Settings
 # For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
-  data_dir: "/home/alb/WSL-Projects/mice_social_action_new/data/" # Path to the directory containing train.csv and tracking/annotation folders
+  data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 512 # Increased to 2048 to fill GPU.
   num_workers: 16 # Set to 0 on Windows to avoid Error 1455. Use 8-16 on Linux/AutoDL.
   window_size: 512

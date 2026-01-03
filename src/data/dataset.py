@@ -171,25 +171,28 @@ class MABeDataset(Dataset):
             from tqdm import tqdm
             video_list = list(unique_videos.keys())
             
-            # Use ThreadPoolExecutor for parallel I/O and processing
-            # 22 cores available, using 16 workers to leave some for system/other tasks
-            max_workers = min(len(video_list), 16)
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                def _preload_task(x):
-                    self._load_video(*x)
-                    # Also preload annotation if it exists
-                    anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
-                    if os.path.exists(anno_path):
-                        # Always reload to ensure it's in cache, even if logic above is complex
-                        try:
-                            self.anno_cache[anno_path] = pd.read_parquet(anno_path)
-                        except:
-                            pass
+            if not video_list:
+                print(f"No videos found to preload for mode: {mode}")
+            else:
+                # Use ThreadPoolExecutor for parallel I/O and processing
+                # 22 cores available, using 16 workers to leave some for system/other tasks
+                max_workers = min(len(video_list), 16)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    def _preload_task(x):
+                        self._load_video(*x)
+                        # Also preload annotation if it exists
+                        anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
+                        if os.path.exists(anno_path):
+                            # Always reload to ensure it's in cache, even if logic above is complex
+                            try:
+                                self.anno_cache[anno_path] = pd.read_parquet(anno_path)
+                            except:
+                                pass
+                    
+                    list(tqdm(executor.map(_preload_task, video_list), 
+                              total=len(video_list), desc="Preloading Videos & Annotations"))
                 
-                list(tqdm(executor.map(_preload_task, video_list), 
-                          total=len(video_list), desc="Preloading Videos & Annotations"))
-            
-            print(f"Preloaded {len(self.video_cache)} videos and {len(self.anno_cache)} annotations into RAM.")
+                print(f"Preloaded {len(self.video_cache)} videos and {len(self.anno_cache)} annotations into RAM.")
 
         if mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich':
             self.sampler = ActionRichSampler(self.labels, window_size=512, bias_factor=config['data']['sampling']['bias_factor'])
