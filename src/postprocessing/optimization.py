@@ -17,49 +17,55 @@ class PostProcessor:
 
     def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes):
         lab_mask = (lab_ids == lab)
-        # [N_lab, C]
-        lab_preds = predictions[lab_mask]
-        # Handle uint8 targets (1 is positive, 0 is negative, 255 is NaN)
-        lab_targets = (targets[lab_mask] == 1)
+        
+        # Optimization: Sample if the lab data is too large to speed up grid search
+        # 1,000,000 samples are more than enough to find a stable threshold
+        max_samples = 1000000
+        num_lab_samples = np.sum(lab_mask)
+        
+        if num_lab_samples > max_samples:
+            # Get indices of this lab
+            lab_indices = np.where(lab_mask)[0]
+            # Randomly sample
+            sampled_indices = np.random.choice(lab_indices, max_samples, replace=False)
+            lab_preds = predictions[sampled_indices].astype(np.float32)
+            lab_targets = (targets[sampled_indices] > 0.5)
+        else:
+            lab_preds = predictions[lab_mask].astype(np.float32)
+            lab_targets = (targets[lab_mask] > 0.5)
         
         # Calculate sigmas for all classes at once
-        # [C]
         sigmas_per_class = np.std(lab_preds, axis=0)
 
         # Check for positive samples per class
-        # [C]
         has_positives = lab_targets.sum(axis=0) > 0
         
         # Prepare output thresholds (default 0.5)
         best_thresh_per_class = np.full(num_classes, 0.5)
         
-        # Only process classes with positives
         if not np.any(has_positives):
             return lab, best_thresh_per_class, sigmas_per_class
 
-        # Memory-efficient F1 calculation: loop over thresholds instead of expanding memory
         # [C, K]
         f1_scores = np.zeros((num_classes, len(threshold_range)))
         
         for i, th in enumerate(threshold_range):
-            # [N_lab, C]
+            # Vectorized comparison and bitwise ops
             preds_bool = lab_preds > th
             
-            # Sum over samples (axis 0) -> [C]
             tp = (preds_bool & lab_targets).sum(axis=0)
             fp = (preds_bool & ~lab_targets).sum(axis=0)
             fn = (~preds_bool & lab_targets).sum(axis=0)
             
             denom = 2 * tp + fp + fn
             f1_scores[:, i] = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+            
+            # Explicitly clear large temp boolean array
+            del preds_bool
         
-        # Best index per class: [C]
+        # Best index per class
         best_indices = np.argmax(f1_scores, axis=1)
-        
-        # Map indices to thresholds
         optimized_thresholds = threshold_range[best_indices]
-        
-        # Restore default 0.5 for classes with no positives
         optimized_thresholds[~has_positives] = 0.5
         
         return lab, optimized_thresholds, sigmas_per_class
@@ -191,7 +197,7 @@ class PostProcessor:
         
         # Process in chunks to avoid massive float32 conversion OOM
         # Each chunk is converted to float32, smoothed, and converted back to orig_dtype
-        chunk_size = 500 # Process 500 windows at a time
+        chunk_size = 20000 # Increased for better performance (RTX 6000 / 110GB RAM)
         
         if predictions.ndim == 2:
             # Single sequence [T, C]
@@ -273,18 +279,19 @@ class PostProcessor:
 
         if lab_ids is not None:
             unique_labs = np.unique(lab_ids)
-            # Sequential processing for lab-specific sequences to save memory
+            results = Parallel(n_jobs=self.n_jobs)(
+                delayed(_fill_seq)(predictions[lab_ids == lab]) for lab in unique_labs
+            )
             final_preds = np.zeros_like(predictions)
-            for lab in unique_labs:
-                mask = (lab_ids == lab)
-                final_preds[mask] = _fill_seq(predictions[mask])
+            for lab, filled in zip(unique_labs, results):
+                final_preds[lab_ids == lab] = filled
             return final_preds
         elif predictions.ndim == 3:
-            # [N, T, C] - Sequential processing to save memory
-            final_preds = np.zeros_like(predictions)
-            for i in range(predictions.shape[0]):
-                final_preds[i] = _fill_seq(predictions[i])
-            return final_preds
+            # [N, T, C]
+            results = Parallel(n_jobs=self.n_jobs)(
+                delayed(_fill_seq)(predictions[i]) for i in range(predictions.shape[0])
+            )
+            return np.array(results)
         else:
             return _fill_seq(predictions)
 
