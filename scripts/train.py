@@ -82,9 +82,8 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     # Optimization: torch.compile
     if not config.get('test', False) and config['training'].get('torch_compile', True):
         try:
-            print("Compiling model with torch.compile (mode=reduce-overhead)...")
-            # Use reduce-overhead for better stability. max-autotune can fail on 1D convs.
-            model = torch.compile(model, mode="reduce-overhead")
+            print("Compiling model with torch.compile...")
+            model = torch.compile(model)
         except Exception as e:
             print(f"Compilation failed, fallback to eager mode: {e}")
     else:
