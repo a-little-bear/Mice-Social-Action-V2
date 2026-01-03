@@ -314,9 +314,20 @@ class Trainer:
 
         if collect_all:
             print("\n[Post-Processing] Concatenating predictions...")
-            # Use torch.cat for fast concatenation on CPU
-            full_probs = torch.cat(all_probs, dim=0).numpy()
-            full_targets = torch.cat(all_targets, dim=0).numpy()
+            
+            # Pre-allocate numpy arrays to save memory (avoid torch.cat which doubles memory)
+            N_total = sum(p.shape[0] for p in all_probs)
+            T, C = all_probs[0].shape[1:]
+            
+            full_probs = np.empty((N_total, T, C), dtype=np.float32)
+            full_targets = np.empty((N_total, T, C), dtype=np.float32)
+            
+            curr = 0
+            for p, t in zip(all_probs, all_targets):
+                batch_n = p.shape[0]
+                full_probs[curr:curr+batch_n] = p.numpy()
+                full_targets[curr:curr+batch_n] = t.numpy()
+                curr += batch_n
             
             # Clear lists to free memory
             del all_probs
@@ -328,7 +339,7 @@ class Trainer:
                 print(f"[Post-Processing] Applying smoothing to full validation set...")
                 full_probs = self.post_processor.apply_smoothing(full_probs, verbose=True)
 
-            N_total, T, C = full_probs.shape
+            # N_total, T, C = full_probs.shape # Already defined above
             
             # Flatten for processing: [N*T, C]
             flat_probs = full_probs.reshape(-1, C)

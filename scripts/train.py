@@ -3,6 +3,11 @@ import torch
 import os
 import sys
 import numpy as np
+
+# Performance Optimization: Enable TensorFloat32 for float32 matmul on Ampere+ GPUs
+if torch.cuda.is_available():
+    torch.set_float32_matmul_precision('high')
+
 import gc
 import atexit
 import argparse

@@ -170,31 +170,45 @@ class PostProcessor:
             window_size = self.config['smoothing']['window_size']
             if window_size % 2 == 0: window_size += 1
             
-            # Update kernel with correct window size
+            # Process sequence by sequence to save memory
             if predictions.ndim == 2:
                 # [T, C]
-                size = (window_size, 1)
+                for c in range(predictions.shape[1]):
+                    predictions[:, c] = median_filter(predictions[:, c], size=window_size)
+                return predictions
             else:
                 # [N, T, C]
-                size = (1, window_size, 1)
-                
-            return median_filter(predictions, size=size)
+                for i in range(predictions.shape[0]):
+                    for c in range(predictions.shape[2]):
+                        predictions[i, :, c] = median_filter(predictions[i, :, c], size=window_size)
+                return predictions
             
         elif method == 'ema':
             alpha = self.config['smoothing']['alpha']
             b = [alpha]
             a = [1, -(1-alpha)]
             
-            # Forward
-            smoothed = lfilter(b, a, predictions, axis=time_axis)
-            
-            # Backward
-            # Flip along time axis
-            predictions_flipped = np.flip(predictions, axis=time_axis)
-            smoothed_back = lfilter(b, a, predictions_flipped, axis=time_axis)
-            smoothed_back = np.flip(smoothed_back, axis=time_axis)
-            
-            return (smoothed + smoothed_back) / 2.0
+            # Process sequence by sequence to save memory
+            if predictions.ndim == 2:
+                # [T, C]
+                # Forward
+                smoothed = lfilter(b, a, predictions, axis=0)
+                # Backward
+                predictions_flipped = np.flip(predictions, axis=0)
+                smoothed_back = lfilter(b, a, predictions_flipped, axis=0)
+                smoothed_back = np.flip(smoothed_back, axis=0)
+                return (smoothed + smoothed_back) / 2.0
+            else:
+                # [N, T, C]
+                for i in range(predictions.shape[0]):
+                    # Forward
+                    smoothed = lfilter(b, a, predictions[i], axis=0)
+                    # Backward
+                    predictions_flipped = np.flip(predictions[i], axis=0)
+                    smoothed_back = lfilter(b, a, predictions_flipped, axis=0)
+                    smoothed_back = np.flip(smoothed_back, axis=0)
+                    predictions[i] = (smoothed + smoothed_back) / 2.0
+                return predictions
         
         return predictions
 
