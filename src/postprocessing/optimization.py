@@ -494,9 +494,23 @@ class PostProcessor:
             mask = (lab_ids == lab)
             lab_p = predictions[mask]
             lab_t = targets[mask]
+            
             # Vectorized F1 for all classes
             f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
-            return lab, np.mean(f1s)
+            
+            # Filter out classes that have NO positive samples in the ground truth
+            # This mimics the "active labels" logic of the challenge:
+            # If a behavior is not present (or not labeled) for this lab, 
+            # we shouldn't penalize the model (F1=0) for correctly predicting nothing (TN),
+            # nor should we let a 0.0 drag down the average.
+            present_classes = (lab_t.sum(axis=0) > 0)
+            
+            if present_classes.sum() == 0:
+                return lab, 0.0
+                
+            # Only average F1s for classes that actually exist in this lab's GT
+            relevant_f1s = f1s[present_classes]
+            return lab, np.mean(relevant_f1s)
             
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(_calc_lab_f1)(lab) for lab in unique_labs
