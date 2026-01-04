@@ -97,8 +97,9 @@ cross_validation:
 
 post_processing:
   n_jobs: 8 # Increased for faster processing with 110GB RAM headroom
-  optimize_thresholds: true
-  tie_breaking: "z_score" # Options: "none", "z_score", "argmax"
+  threshold_strategy: "kaggle" # Options: "dynamic" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
+  optimize_thresholds: false # Deprecated, kept for backward compatibility (if true and strategy is dynamic, runs grid search)
+  tie_breaking: "kaggle" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:
     method: "ema" # Options: "median_filter", "ema", "none"
     window_size: 7

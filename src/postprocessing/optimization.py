@@ -126,13 +126,46 @@ class PostProcessor:
         
         return lab, optimized_thresholds, sigmas_per_class, np.mean(best_scores)
 
-    def optimize_thresholds(self, predictions, targets, lab_ids):
+    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None):
         """
         Search for optimal thresholds per lab using Grid Search.
         predictions: [N, C] probabilities
         targets: [N, C] binary labels
         lab_ids: [N]
         """
+        if classes is not None:
+            self.classes = classes
+            self.class_to_idx = {c: i for i, c in enumerate(classes)}
+
+        strategy = self.config.get('threshold_strategy', 'dynamic')
+        
+        # Handle 'kaggle' strategy (Hardcoded)
+        if strategy == 'kaggle':
+            if not hasattr(self, 'classes') or not self.classes:
+                print("Warning: 'kaggle' threshold strategy requires class names. Falling back to dynamic or default.")
+            else:
+                print("Loading hardcoded Kaggle thresholds (TT_PER_LAB_NN)...")
+                unique_labs = np.unique(lab_ids)
+                for lab in unique_labs:
+                    if lab in TT_PER_LAB_NN:
+                        lab_thresh = TT_PER_LAB_NN[lab]
+                        # Default to 0.5 for actions not in the dict
+                        thresh_arr = np.full(len(self.classes), 0.5)
+                        for act, th in lab_thresh.items():
+                            if act in self.class_to_idx:
+                                thresh_arr[self.class_to_idx[act]] = th
+                        self.thresholds[lab] = thresh_arr
+                return
+
+        # Handle 'fixed' strategy
+        if strategy == 'fixed':
+            unique_labs = np.unique(lab_ids)
+            num_classes = predictions.shape[1]
+            for lab in unique_labs:
+                self.thresholds[lab] = np.full(num_classes, 0.5)
+            return
+
+        # Handle 'dynamic' strategy (Default)
         if not self.config.get('optimize_thresholds', False):
             return
             
@@ -173,6 +206,53 @@ class PostProcessor:
         # Binary mask of classes above threshold
         above_thresh = lab_probs > thresholds
         
+        if method == 'kaggle':
+            # Rule-based tie breaking from 7th place solution
+            # Requires self.classes and self.class_to_idx to be set
+            if not hasattr(self, 'classes') or not self.classes:
+                # Fallback to argmax if classes not available
+                method = 'argmax'
+            else:
+                P_adj = lab_probs.copy()
+                if lab in TIE_CONFIG_V2:
+                    cfg = TIE_CONFIG_V2[lab]
+                    # Only apply if multiple classes pass threshold
+                    multi_mask = (above_thresh.sum(axis=1) > 1)
+                    
+                    if multi_mask.any():
+                        # Boost
+                        for act, delta in cfg.get('boost', {}).items():
+                            if act in self.class_to_idx:
+                                idx = self.class_to_idx[act]
+                                P_adj[multi_mask, idx] += float(delta)
+                        
+                        # Penalize
+                        for act, delta in cfg.get('penalize', {}).items():
+                            if act in self.class_to_idx:
+                                idx = self.class_to_idx[act]
+                                P_adj[multi_mask, idx] -= float(delta)
+                                
+                        # Prefer
+                        for winner, loser, margin in cfg.get('prefer', []):
+                            if winner in self.class_to_idx and loser in self.class_to_idx:
+                                wi, li = self.class_to_idx[winner], self.class_to_idx[loser]
+                                fm = multi_mask & above_thresh[:, wi] & above_thresh[:, li]
+                                if fm.any():
+                                    P_adj[fm, wi] += float(margin)
+                                    
+                        # Clip
+                        np.clip(P_adj, 0.0, 1.0, out=P_adj)
+                
+                # Argmax on adjusted probabilities, but only for those originally above threshold
+                # (Or should we re-check threshold? Notebook logic checks threshold on P, adjusts P to P_adj, then argmax on P_adj masked by pass_mask)
+                P_masked = np.where(above_thresh, P_adj, -np.inf)
+                best_idx = np.argmax(P_masked, axis=1)
+                has_pred = above_thresh.any(axis=1)
+                
+                lab_final = np.zeros(lab_probs.shape, dtype=np.uint8)
+                lab_final[has_pred, best_idx[has_pred]] = 1
+                return lab_mask, lab_final
+
         if method == 'argmax':
             # Just take the max prob among those above threshold
             masked_probs = lab_probs * above_thresh

@@ -382,9 +382,10 @@ class Trainer:
             flat_lab_ids = flat_lab_ids[valid_mask]
             gc.collect()
             
-            # 1. Optimize Thresholds
-            if self.config['post_processing'].get('optimize_thresholds', False):
-                self.post_processor.optimize_thresholds(flat_probs, flat_targets, flat_lab_ids)
+            # 1. Optimize/Load Thresholds
+            # We pass classes to support 'kaggle' strategy which needs action names
+            classes = getattr(self.train_loader.dataset, 'classes', None)
+            self.post_processor.optimize_thresholds(flat_probs, flat_targets, flat_lab_ids, classes=classes)
             
             # 2. Apply Tie Breaking or Thresholds
             if self.config['post_processing'].get('tie_breaking', 'none') != 'none':
