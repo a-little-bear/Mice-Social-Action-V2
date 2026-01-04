@@ -4,6 +4,11 @@ from scipy.signal import lfilter
 from scipy.ndimage import binary_closing, median_filter, binary_opening
 from sklearn.metrics import f1_score
 from joblib import Parallel, delayed
+import pandas as pd
+from .notebook_logic import (
+    TT_PER_LAB_NN, TIE_CONFIG_V2, TRAIN_LAB_ACTIONS, 
+    smooth_probs_inplace, mask_probs_numpy_rle, probs_to_nonoverlapping_intervals
+)
 
 class PostProcessor:
     """
@@ -14,6 +19,55 @@ class PostProcessor:
         self.thresholds = {} # Dictionary to store lab-specific thresholds
         self.sigmas = {} # Dictionary to store lab-specific prediction std devs (for Z-score)
         self.n_jobs = config.get('n_jobs', -1)
+
+    def apply_notebook_postprocessing(self, 
+                                      predictions_df: pd.DataFrame, 
+                                      actions: list, 
+                                      active_map: dict = None) -> pd.DataFrame:
+        """
+        Apply the 7th place solution post-processing pipeline.
+        
+        Args:
+            predictions_df: DataFrame with columns ['video_id', 'agent_id', 'target_id', 'frame'] + action columns
+            actions: List of action names
+            active_map: Dictionary mapping video_id to set of allowed "agent,target,action" strings
+            
+        Returns:
+            DataFrame with columns ['video_id', 'agent_id', 'target_id', 'action', 'start_frame', 'stop_frame']
+        """
+        # 1. Smooth
+        smooth_probs_inplace(predictions_df, actions, win=5)
+        
+        # 2. Mask by active set (if provided)
+        if active_map:
+            predictions_df = mask_probs_numpy_rle(predictions_df, actions, active_map, copy=False)
+            
+        # 3. Convert to intervals with per-lab thresholds and tie breaking
+        # We need to process per lab, so we need lab_id in the dataframe or a mapping
+        if 'lab_id' not in predictions_df.columns:
+            # If lab_id is not in df, we can't apply per-lab logic correctly unless we pass it in.
+            # Assuming the user will ensure lab_id is present or we process one lab at a time.
+            # For now, let's assume the user handles the loop or adds the column.
+            pass
+            
+        results = []
+        # Group by lab to apply specific thresholds
+        if 'lab_id' in predictions_df.columns:
+            for lab, grp in predictions_df.groupby('lab_id'):
+                sub = probs_to_nonoverlapping_intervals(
+                    grp, actions, min_len=0, max_gap=7, lab=lab, tie_config=TIE_CONFIG_V2
+                )
+                results.append(sub)
+        else:
+            # Fallback if no lab_id (should not happen if used correctly)
+            sub = probs_to_nonoverlapping_intervals(
+                predictions_df, actions, min_len=0, max_gap=7, lab=None, tie_config=TIE_CONFIG_V2
+            )
+            results.append(sub)
+            
+        if results:
+            return pd.concat(results, ignore_index=True)
+        return pd.DataFrame()
 
     def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes):
         lab_mask = (lab_ids == lab)
@@ -65,10 +119,12 @@ class PostProcessor:
         
         # Best index per class
         best_indices = np.argmax(f1_scores, axis=1)
+        best_scores = f1_scores[np.arange(num_classes), best_indices]
+        
         optimized_thresholds = threshold_range[best_indices]
         optimized_thresholds[~has_positives] = 0.5
         
-        return lab, optimized_thresholds, sigmas_per_class
+        return lab, optimized_thresholds, sigmas_per_class, np.mean(best_scores)
 
     def optimize_thresholds(self, predictions, targets, lab_ids):
         """
@@ -92,11 +148,18 @@ class PostProcessor:
             for lab in unique_labs
         )
         
-        for lab, thresholds, sigmas in results:
+        avg_best_f1s = []
+        for lab, thresholds, sigmas, best_f1 in results:
             self.thresholds[lab] = thresholds
             self.sigmas[lab] = sigmas
+            avg_best_f1s.append(best_f1)
         
-        print(f"Thresholds optimized for {len(unique_labs)} labs.")
+        print(f"Thresholds optimized for {len(unique_labs)} labs. Mean Best F1 (Internal): {np.mean(avg_best_f1s):.4f}")
+        
+        # Debug: Print prediction stats
+        mean_prob = np.mean(predictions)
+        max_prob = np.max(predictions)
+        print(f"Prediction Stats - Mean Prob: {mean_prob:.6f}, Max Prob: {max_prob:.6f}")
 
     def _apply_tie_breaking_lab(self, lab, predictions, lab_ids, method):
         lab_mask = (lab_ids == lab)
