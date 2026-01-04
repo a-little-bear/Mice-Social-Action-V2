@@ -18,7 +18,7 @@ data:
   cache_size: 8 # Ignored when preload is true.
   
   sampling:
-    strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
+    strategy: "action_rich" # Options: "uniform", "action_rich" (oversample rare classes)
     bias_factor: 5.0
 
   preprocessing:
@@ -50,7 +50,7 @@ data:
 model:
   spatial_encoder:
     enabled: true
-    type: "gat" # Options: "gat" (Graph Attention), "st_gcn" (Spatio-Temporal GCN), "identity"
+    type: "st_gcn" # Options: "gat" (Graph Attention), "st_gcn" (Spatio-Temporal GCN), "identity"
     hidden_dim: 128
     num_layers: 3
     dropout: 0.1
