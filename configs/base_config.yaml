@@ -26,7 +26,7 @@ data:
     fix_fps: true
     interpolate_nans: true
     unify_body_parts: true
-    view: "egocentric" # Options: "allocentric", "egocentric" (mouse-centered)
+    view: "allocentric" # Options: "allocentric", "egocentric" (mouse-centered)
     
   features:
     enable_strong_features: true
@@ -50,7 +50,7 @@ data:
 model:
   spatial_encoder:
     enabled: true
-    type: "st_gcn" # Options: "gat" (Graph Attention), "st_gcn" (Spatio-Temporal GCN), "identity"
+    type: "gat" # Options: "gat" (Graph Attention), "st_gcn" (Spatio-Temporal GCN), "identity"
     hidden_dim: 128
     num_layers: 3
     dropout: 0.1
