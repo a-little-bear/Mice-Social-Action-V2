@@ -10,7 +10,7 @@ data:
   data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
   batch_size: 2048 # Increased for RTX 6000 96GB.
   num_workers: 16 # Increased for AutoDL high-core count.
-  window_size: 512
+  window_size: 128 #512
   preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
   prefetch_factor: 2
@@ -19,7 +19,7 @@ data:
   
   sampling:
     strategy: "action_rich" # Options: "uniform", "action_rich" (oversample rare classes)
-    bias_factor: 20.0
+    bias_factor: 2.0
 
   preprocessing:
     target_fps: 30
@@ -84,7 +84,7 @@ training:
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
   loss_type: "bce" #"bce" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
-  pos_weight: 10.0 # Default weight, overridden if dynamic_pos_weight is true
+  pos_weight: 5.0 #10.0 # Default weight, overridden if dynamic_pos_weight is true
   dynamic_pos_weight: false # Enabled: Calculate pos_weight per batch based on actual ratio
   ohem_percent: 0.7 # For OHEM loss
   mask_unlabeled: true
