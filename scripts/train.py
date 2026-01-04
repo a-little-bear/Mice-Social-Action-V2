@@ -4,7 +4,6 @@ import os
 import sys
 import numpy as np
 
-# Performance Optimization: Enable TensorFloat32 for float32 matmul on Ampere+ GPUs
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
 
@@ -15,23 +14,19 @@ from sklearn.model_selection import KFold, GroupKFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
 def cleanup():
-    """Cleanup function to prevent memory leaks on crash or exit."""
     print("\nPerforming memory cleanup...")
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
     
-    # Clear torch.compile artifacts if any
     if hasattr(torch, '_dynamo'):
         torch._dynamo.reset()
         
     print("Cleanup complete.")
 
-# Register cleanup to run on exit
 atexit.register(cleanup)
 
-# Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.dataset import MABeDataset
@@ -50,7 +45,6 @@ def collate_fn(batch):
     lengths = [k.shape[0] for k in keypoints]
     max_len = max(lengths)
     
-    # keypoints[0] shape: (T, M, K, 2)
     kp_shape = keypoints[0].shape[1:]
     padded_keypoints = torch.zeros(len(keypoints), max_len, *kp_shape)
     
@@ -70,7 +64,6 @@ def collate_fn(batch):
 def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=None, num_classes=None, feature_generator=None):
     print(f"Initializing model for {'Fold ' + str(fold_idx) if fold_idx is not None else 'Single Run'}...")
     
-    # Update config with dynamic dims if provided
     if input_dim:
         config['model']['temporal_backbone']['input_dim'] = input_dim
     if num_classes:
@@ -79,7 +72,6 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     model = HHSTFModel(config['model'], feature_generator=feature_generator)
     model = model.to(device)
 
-    # Optimization: torch.compile
     if not config.get('test', False) and config['training'].get('torch_compile', True):
         try:
             print("Compiling model with torch.compile...")
@@ -101,7 +93,6 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
             
             print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val F1 = {val_f1:.4f}")
             
-            # Save logic
             if val_f1 > best_f1:
                 best_f1 = val_f1
                 save_dir = config['training']['save_dir']
@@ -109,7 +100,6 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
                     save_dir = os.path.join(save_dir, f'fold_{fold_idx}')
                 os.makedirs(save_dir, exist_ok=True)
                 torch.save(model.state_dict(), os.path.join(save_dir, 'best_model.pth'))
-                # Also save metrics
                 with open(os.path.join(save_dir, 'metrics.json'), 'w') as f:
                     import json
                     json.dump({'best_f1': best_f1, 'epoch': epoch}, f)
@@ -118,7 +108,6 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
             
         return best_f1
     finally:
-        # Cleanup model and trainer to free GPU memory
         del trainer
         del model
         gc.collect()
@@ -132,7 +121,6 @@ def train():
     parser.add_argument("--save_dir", type=str, help="Override save directory")
     args = parser.parse_args()
 
-    # 1. Load Config
     config_path = args.config
     if not os.path.exists(config_path):
         print(f"Error: Config file {config_path} not found.")
@@ -141,7 +129,6 @@ def train():
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
 
-    # Override from CLI if provided
     if args.data_dir:
         config['data']['data_dir'] = args.data_dir
     if args.save_dir:
@@ -158,27 +145,22 @@ def train():
             config['cross_validation']['n_folds'] = 2
         print(f"Overriding config for testing: data_dir={config['data']['data_dir']}, epochs={config['training']['epochs']}")
 
-    # Windows compatibility fix for shared memory (Error 1455)
     import platform
     if platform.system() == 'Windows' and config['data']['num_workers'] > 0:
         print(f"INFO: Windows detected. Setting num_workers from {config['data']['num_workers']} to 0 to avoid shared memory issues.")
         config['data']['num_workers'] = 0
-        # Also disable persistent_workers on Windows if num_workers is 0
         config['data']['persistent_workers'] = False
 
     print(f"Starting Experiment: {config['experiment_name']}")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # 2. Initialize Data
-    # For CV, we use the 'train' mode dataset as the full pool
     full_dataset = MABeDataset(config['data']['data_dir'], config, mode='train')
     
     if len(full_dataset) == 0:
         print(f"ERROR: No data found in {config['data']['data_dir']}. Please check your data path.")
         return
 
-    # Calculate dims once
     num_mice = 2
     if config['data']['preprocessing'].get('unify_body_parts', False):
         num_keypoints = 7
@@ -189,19 +171,15 @@ def train():
     num_classes = full_dataset.num_classes
     print(f"Input Dim: {input_dim}, Num Classes: {num_classes}")
 
-    # Check CV config
     cv_config = config.get('cross_validation', {'enabled': False})
     
     if cv_config.get('enabled', False):
         n_folds = cv_config.get('n_folds', 5)
         print(f"Starting {n_folds}-Fold Group Cross Validation (Grouped by Video ID)...")
         
-        # Use GroupKFold to prevent data leakage between windows of the same video
         kfold = GroupKFold(n_splits=n_folds)
         cv_scores = []
         
-        # Extract video_ids for grouping
-        # full_dataset.data is a list of dicts, each has 'video_id'
         groups = [d['video_id'] for d in full_dataset.data]
         indices = np.arange(len(full_dataset))
         
@@ -247,7 +225,6 @@ def train():
                 traceback.print_exc()
             
             finally:
-                # Explicitly shutdown loaders and clear memory
                 if train_loader is not None:
                     del train_loader
                 if val_loader is not None:
@@ -260,7 +237,6 @@ def train():
         
     else:
         print("Starting Standard Training (Train/Val Split)...")
-        # Standard split logic
         val_dataset = MABeDataset(config['data']['data_dir'], config, mode='val')
         
         train_loader = None

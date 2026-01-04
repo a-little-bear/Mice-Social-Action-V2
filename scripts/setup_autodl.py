@@ -10,21 +10,15 @@ except ImportError:
     from tqdm import tqdm
 
 def setup_autodl_data():
-    """
-    Extracts the MABe dataset from autodl-tmp to the project data directory.
-    """
-    # Determine project root (parent of scripts/)
     current_file = Path(__file__).resolve()
     project_root = current_file.parent.parent
     
-    # Target directory
     data_dir = project_root / 'data'
     
-    # Possible locations for the zip file
     zip_candidates = [
-        Path('/root/autodl-tmp/MABe-mouse-behavior-detection.zip'), # Standard AutoDL absolute path
-        project_root / 'autodl-tmp/MABe-mouse-behavior-detection.zip', # Local relative to project
-        Path('autodl-tmp/MABe-mouse-behavior-detection.zip') # Relative to CWD
+        Path('/root/autodl-tmp/MABe-mouse-behavior-detection.zip'), 
+        project_root / 'autodl-tmp/MABe-mouse-behavior-detection.zip', 
+        Path('autodl-tmp/MABe-mouse-behavior-detection.zip') 
     ]
     
     zip_path = None
@@ -42,23 +36,19 @@ def setup_autodl_data():
     print(f"Found dataset archive: {zip_path}")
     print(f"Target directory: {data_dir}")
     
-    # Ensure data directory exists
     data_dir.mkdir(parents=True, exist_ok=True)
     
     print("Extracting... This may take a while.")
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Get list of files to extract
             members = zip_ref.infolist()
             
-            # Use tqdm for progress bar
             for member in tqdm(members, desc="Extracting", unit="file"):
                 zip_ref.extract(member, data_dir)
                 
         print("\nExtraction completed successfully!")
         print(f"Data is ready in {data_dir}")
         
-        # Verify extraction
         expected_files = ['train.csv', 'sample_submission.csv']
         found_files = [f.name for f in data_dir.iterdir()]
         print(f"Files in data dir: {found_files}")

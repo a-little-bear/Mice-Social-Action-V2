@@ -11,19 +11,12 @@ class FocalLoss(nn.Module):
         self.pos_weight = pos_weight
 
     def forward(self, inputs, targets):
-        # Standard BCE to get log(pt)
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
         pt = torch.exp(-bce_loss)
         
-        # Focal term: (1 - pt)^gamma
         focal_term = (1 - pt) ** self.gamma
         
-        # Class balancing
         if self.pos_weight is not None:
-            # Apply pos_weight to positive examples
-            # targets is 0 or 1
-            # weight = pos_weight * target + 1 * (1 - target)
-            # But pos_weight can be a vector [C]
             if self.pos_weight.device != inputs.device:
                 self.pos_weight = self.pos_weight.to(inputs.device)
                 
@@ -64,15 +57,12 @@ class OHEMLoss(nn.Module):
         loss = self.base_loss(logits, targets)
         
         if mask is not None:
-            # Ensure mask is boolean and flattened
             if mask.shape != loss.shape:
-                # Broadcast mask if necessary (e.g. [B, T] to [B, T, C])
                 if mask.dim() < loss.dim():
                     while mask.dim() < loss.dim():
                         mask = mask.unsqueeze(-1)
                     mask = mask.expand_as(loss)
             
-            # Select only valid losses
             loss_flat = loss[mask.bool()]
         else:
             loss_flat = loss.view(-1)

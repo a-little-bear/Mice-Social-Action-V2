@@ -17,10 +17,6 @@ class FeatureGenerator(nn.Module):
         self.window_sizes = config.get('window_sizes', [5, 15, 30])
 
     def forward(self, x):
-        """
-        x: [B, T, M, K, C] keypoints
-        Returns: [B, T, F] features
-        """
         features = []
         
         if self.use_distances:
@@ -44,11 +40,9 @@ class FeatureGenerator(nn.Module):
         if self.use_body_features:
             features.append(self.compute_body_features(x))
             
-        # Concatenate all features
         return torch.cat(features, dim=-1)
 
     def compute_distances(self, keypoints):
-        # keypoints: [T, M, K, C] or [B, T, M, K, C]
         if keypoints.dim() == 5:
             B, T, M, K, C = keypoints.shape
             flat_kps = keypoints.view(B, T, M*K, C)
@@ -72,7 +66,6 @@ class FeatureGenerator(nn.Module):
         return distances
 
     def compute_derivatives(self, keypoints):
-        # Works for both [T, ...] and [B, T, ...]
         velocity = torch.zeros_like(keypoints)
         velocity[..., 1:, :, :, :] = keypoints[..., 1:, :, :, :] - keypoints[..., :-1, :, :, :]
         
@@ -85,8 +78,6 @@ class FeatureGenerator(nn.Module):
         return velocity, acceleration, jerk
 
     def compute_angles(self, keypoints):
-        # keypoints: [..., M, K, C]
-        # nose is index 0, tail_base is index 6 (based on BodyPartMapping)
         nose = keypoints[..., 0, :]
         tail = keypoints[..., 6, :]
             
@@ -96,60 +87,36 @@ class FeatureGenerator(nn.Module):
         return angles.unsqueeze(-1)
 
     def compute_body_features(self, keypoints):
-        """
-        Compute body curvature and body length.
-        keypoints: [..., M, K, C]
-        Indices: 0: nose, 3: neck, 6: tail_base
-        """
         nose = keypoints[..., 0, :]
         neck = keypoints[..., 3, :]
         tail = keypoints[..., 6, :]
         
-        # 1. Body Length (Nose to Tail)
         body_length = torch.norm(nose - tail, dim=-1, keepdim=True)
         
-        # 2. Body Length Change (Derivative)
         body_length_change = torch.zeros_like(body_length)
         body_length_change[..., 1:, :] = body_length[..., 1:, :] - body_length[..., :-1, :]
         
-        # 3. Body Curvature (Angle between nose-neck and neck-tail)
         v1 = nose - neck
         v2 = tail - neck
         
-        # Normalize vectors
         v1_norm = v1 / (torch.norm(v1, dim=-1, keepdim=True) + 1e-6)
         v2_norm = v2 / (torch.norm(v2, dim=-1, keepdim=True) + 1e-6)
         
-        # Dot product for cosine of angle
         cos_angle = (v1_norm * v2_norm).sum(dim=-1, keepdim=True)
-        # Clamp for stability
         cos_angle = torch.clamp(cos_angle, -1.0 + 1e-6, 1.0 - 1e-6)
         curvature = torch.acos(cos_angle)
         
-        # Reshape to [B, T, M*F]
         B, T, M = keypoints.shape[:3]
         res = torch.cat([body_length, body_length_change, curvature], dim=-1)
         return res.view(B, T, -1)
 
     def compute_relative_angles(self, keypoints):
-        # keypoints: [..., M, K, C]
-        # Assumes M=2 for social interactions usually, but can generalize
-        # We want:
-        # 1. Angle difference between mice orientations
-        # 2. Angle of relative position vector (centroid to centroid) w.r.t ego orientation
-        
-        # Orientation vectors
         nose = keypoints[..., 0, :]
         tail = keypoints[..., 3, :]
-        orient_vec = nose - tail # [..., M, 2]
-        orient_angle = torch.atan2(orient_vec[..., 1], orient_vec[..., 0]) # [..., M]
+        orient_vec = nose - tail 
+        orient_angle = torch.atan2(orient_vec[..., 1], orient_vec[..., 0]) 
         
-        # Centroids (mean of all keypoints)
-        centroids = torch.mean(keypoints, dim=-2) # [..., M, 2]
-        
-        # Relative features
-        # We compute for each pair (i, j)
-        # For M=2, we have (0,1) and (1,0)
+        centroids = torch.mean(keypoints, dim=-2) 
         
         if keypoints.dim() == 5:
             B, T, M, K, C = keypoints.shape
@@ -164,12 +131,9 @@ class FeatureGenerator(nn.Module):
             for j in range(M):
                 if i == j: continue
                 
-                # 1. Relative Orientation: Angle(j) - Angle(i)
                 diff_angle = orient_angle[..., j] - orient_angle[..., i]
-                # Normalize to [-pi, pi]
                 diff_angle = torch.atan2(torch.sin(diff_angle), torch.cos(diff_angle))
                 
-                # 2. Relative Position Angle: Angle(Pos_j - Pos_i) - Angle(i)
                 pos_vec = centroids[..., j, :] - centroids[..., i, :]
                 pos_angle = torch.atan2(pos_vec[..., 1], pos_vec[..., 0])
                 rel_pos_angle = pos_angle - orient_angle[..., i]
@@ -181,15 +145,14 @@ class FeatureGenerator(nn.Module):
         return torch.cat(rel_angles_list, dim=-1)
 
     def compute_window_stats(self, features):
-        # features: [B, T, D] or [T, D]
         if features.dim() == 2:
-            features = features.unsqueeze(0) # Add batch dim
+            features = features.unsqueeze(0) 
             had_no_batch = True
         else:
             had_no_batch = False
             
         B, T, D = features.shape
-        features_t = features.transpose(1, 2) # [B, D, T]
+        features_t = features.transpose(1, 2) 
         
         stats_list = []
         for w in self.window_sizes:
@@ -197,7 +160,6 @@ class FeatureGenerator(nn.Module):
             avg = torch.nn.functional.avg_pool1d(features_t, kernel_size=w, stride=1, padding=padding)
             max_val = torch.nn.functional.max_pool1d(features_t, kernel_size=w, stride=1, padding=padding)
             
-            # Handle padding mismatch
             if avg.shape[2] > T:
                 avg = avg[:, :, :T]
                 max_val = max_val[:, :, :T]
@@ -232,12 +194,9 @@ class FeatureGenerator(nn.Module):
         if self.use_angles:
             dim += num_mice
         if self.use_relative_angles:
-            # For each pair (i, j) where i != j, we add 2 angles
-            # Total pairs = M * (M - 1)
             dim += num_mice * (num_mice - 1) * 2
             
         if self.use_body_features:
-            # body_length, body_length_change, curvature for each mouse
             dim += num_mice * 3
             
         if self.use_window_stats:
@@ -248,7 +207,6 @@ class FeatureGenerator(nn.Module):
         return dim
 
     def __call__(self, keypoints):
-        # keypoints: [T, M, K, C] or [B, T, M, K, C]
         if keypoints.dim() == 5:
             B, T, M, K, C = keypoints.shape
             orig_shape_flat = (B, T, -1)

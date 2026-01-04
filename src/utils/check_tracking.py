@@ -10,7 +10,6 @@ if os.path.exists(file_path):
     print("\nHead:")
     print(df.head())
     
-    # Check if values are numeric
     try:
         vals = df.values
         print(f"\nValues shape: {vals.shape}")

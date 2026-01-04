@@ -43,13 +43,11 @@ class HHSTFModel(nn.Module):
             self.two_stage_head = nn.Linear(fusion_dim, 1)
 
     def forward(self, x, lab_ids=None, subject_ids=None):
-        # Generate features on GPU if generator is provided
         if self.feature_generator:
             x = self.feature_generator(x)
             
         if self.spatial_encoder:
             B, T, F = x.shape
-            # adj = torch.eye(F).to(x.device).unsqueeze(0).expand(B*T, -1, -1)
             x_flat = x.view(B*T, F)
             x_spatial = self.spatial_encoder(x_flat, adj=None)
             x = x_spatial.view(B, T, -1)

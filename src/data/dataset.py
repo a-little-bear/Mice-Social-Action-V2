@@ -11,7 +11,6 @@ from .features import FeatureGenerator
 from .sampling import ActionRichSampler
 
 class MABeDataset(Dataset):
-    # Class-level caches to share data across train/val/test instances
     _video_cache = {}
     _anno_cache = {}
 
@@ -38,7 +37,6 @@ class MABeDataset(Dataset):
         self.cache_size = config['data'].get('cache_size', 128)
         self.preload = config['data'].get('preload', False)
         
-        # Load metadata
         csv_name = 'train.csv' if mode in ['train', 'val'] else 'test.csv'
         csv_path = os.path.join(data_path, csv_name)
         if not os.path.exists(csv_path):
@@ -49,7 +47,6 @@ class MABeDataset(Dataset):
         else:
             df = pd.read_csv(csv_path)
             
-            # Parse behaviors
             if 'behaviors_labeled' in df.columns:
                 behaviors_str = df.iloc[0]['behaviors_labeled']
                 try:
@@ -69,7 +66,6 @@ class MABeDataset(Dataset):
             
             use_sampler = mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich'
             
-            # Populate data
             for idx, row in df.iterrows():
                 lab_id = row['lab_id']
                 video_id = str(row['video_id'])
@@ -97,19 +93,16 @@ class MABeDataset(Dataset):
                     T_est = 18000
                     fps = 30.0
                 
-                # Adjust window and stride based on FPS to ensure consistent output length after correction
                 target_fps = config['data']['preprocessing']['target_fps']
                 fps_ratio = fps / target_fps
                 adj_window = int(self.window_size * fps_ratio)
                 adj_stride = int(self.stride * fps_ratio)
                 
-                # Ensure adj_window is at least 1
                 adj_window = max(1, adj_window)
                 adj_stride = max(1, adj_stride)
 
                 num_windows = (T_est + adj_stride - 1) // adj_stride
                 
-                # 1. Regular sliding windows
                 for w in range(num_windows):
                     start = w * adj_stride
                     end = start + adj_window
@@ -135,18 +128,15 @@ class MABeDataset(Dataset):
                             has_action = not overlaps.empty
                         self.labels.append(has_action)
 
-                # 2. Event-centered windows (Optimization from Mice-Social-Action)
                 if use_sampler and not anno_df.empty:
                     for _, row in anno_df.iterrows():
                         event_start = row['start_frame']
                         event_stop = row['stop_frame']
                         event_center = (event_start + event_stop) // 2
                         
-                        # Center the window on the event
                         start = max(0, event_center - adj_window // 2)
                         end = start + adj_window
                         
-                        # Avoid adding windows beyond estimated duration
                         if start >= T_est:
                             continue
                             
@@ -160,10 +150,9 @@ class MABeDataset(Dataset):
                             'end': end,
                             'fps': fps
                         })
-                        self.labels.append(True) # Guaranteed to have an action
+                        self.labels.append(True) 
 
         if self.preload:
-            # Check if already preloaded by another instance to avoid redundant work
             if len(MABeDataset._video_cache) > 0:
                 print(f"Data already preloaded in memory. Skipping redundant preload for mode: {mode}")
             else:
@@ -179,16 +168,12 @@ class MABeDataset(Dataset):
                 if not video_list:
                     print(f"No videos found to preload for mode: {mode}")
                 else:
-                    # Use ThreadPoolExecutor for parallel I/O and processing
-                    # 22 cores available, using 16 workers to leave some for system/other tasks
                     max_workers = min(len(video_list), 16)
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         def _preload_task(x):
                             self._load_video(*x)
-                            # Also preload annotation if it exists
                             anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
                             if os.path.exists(anno_path):
-                                # Always reload to ensure it's in cache, even if logic above is complex
                                 try:
                                     MABeDataset._anno_cache[anno_path] = pd.read_parquet(anno_path)
                                 except:
@@ -212,9 +197,6 @@ class MABeDataset(Dataset):
         if not os.path.exists(annotation_path):
             return labels
             
-        # Calculate scale factor to align labels with FPS-corrected keypoints
-        # original_len = end_frame - start_frame
-        # scale = num_frames / original_len
         original_len = end_frame - start_frame
         scale = num_frames / original_len if original_len > 0 else 1.0
         
@@ -223,9 +205,7 @@ class MABeDataset(Dataset):
         else:
             try:
                 df = pd.read_parquet(annotation_path)
-                # Only pop if not preloading and cache is full
                 if not self.preload and len(MABeDataset._anno_cache) >= self.cache_size:
-                    # Remove oldest entry
                     it = iter(MABeDataset._anno_cache)
                     try:
                         MABeDataset._anno_cache.pop(next(it))
@@ -235,14 +215,12 @@ class MABeDataset(Dataset):
             except:
                 return labels
             
-        # Filter
         df_slice = df[
             (df['start_frame'] < end_frame) & 
             (df['stop_frame'] > start_frame)
         ]
         
         for _, row in df_slice.iterrows():
-            # Construct composite class name: subject,object,action
             try:
                 agent_id = int(row['agent_id'])
                 target_id = int(row['target_id'])
@@ -269,7 +247,6 @@ class MABeDataset(Dataset):
             
             if target_class:
                 idx = self.class_to_idx[target_class]
-                # Scale indices to match the num_frames (FPS corrected)
                 s_w = max(0, int((s - start_frame) * scale))
                 e_w = min(num_frames, int((e - start_frame) * scale))
                 
@@ -304,9 +281,7 @@ class MABeDataset(Dataset):
             
             keypoints = np.full((T, M, P, 2), np.nan, dtype=np.float32)
             
-            # Mouse ID Correction for AdaptableSnail (Swapped IDs)
-            # Reference: Kaggle Discussion 3305943
-            swapped_videos = ['1212811043', '1260392287', '1351098077'] # Add more as needed
+            swapped_videos = ['1212811043', '1260392287', '1351098077'] 
             if lab_id == 'AdaptableSnail' and video_id in swapped_videos and len(mice) >= 2:
                 mouse_map = {mice[0]: 1, mice[1]: 0}
                 for i in range(2, len(mice)):
@@ -326,7 +301,6 @@ class MABeDataset(Dataset):
             keypoints[f_idx, m_idx, p_idx, 0] = df['x'].values
             keypoints[f_idx, m_idx, p_idx, 1] = df['y'].values
             
-            # Interpolate NaNs once during loading/preloading
             if self.config['data']['preprocessing'].get('interpolate_nans', True):
                 mask = np.isnan(keypoints)
                 if mask.any():
@@ -344,8 +318,6 @@ class MABeDataset(Dataset):
                 except (StopIteration, KeyError):
                     pass
             
-            # Optimization: Store as bfloat16 torch tensor to save 50% RAM
-            # bfloat16 is ideal for RTX 6000 and preserves dynamic range better than float16
             keypoints = torch.from_numpy(keypoints).to(torch.bfloat16)
             MABeDataset._video_cache[cache_key] = keypoints
             
@@ -367,7 +339,6 @@ class MABeDataset(Dataset):
         keypoints_full = self._load_video(tracking_path, lab_id, video_id)
         
         if keypoints_full is None:
-             # Return dummy data with correct number of values
              dummy_kps = torch.zeros(self.window_size, 2, 7, 2)
              if self.mode in ['train', 'val']:
                  dummy_labels = torch.zeros(self.window_size, self.num_classes)
@@ -381,9 +352,7 @@ class MABeDataset(Dataset):
         else:
             actual_end = min(end, T_full)
             
-            # Handle bfloat16 torch tensor from cache
             if isinstance(keypoints_full, torch.Tensor):
-                # Slice first, then convert to float32 numpy for transforms
                 keypoints_slice = keypoints_full[start:actual_end].to(torch.float32).numpy()
             else:
                 keypoints_slice = keypoints_full[start:actual_end]
@@ -408,8 +377,6 @@ class MABeDataset(Dataset):
         keypoints_tensor = torch.FloatTensor(keypoints)
         
         if self.mode in ['train', 'val']:
-            # Pass keypoints_tensor.shape[0] to ensure label length matches feature length
-            # The _create_label_tensor now handles scaling internally
             label = self._create_label_tensor(
                 sample_info['annotation_path'], 
                 start, 

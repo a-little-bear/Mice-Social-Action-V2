@@ -1,11 +1,6 @@
-
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Set, Tuple
-
-# =============================================================================
-# 1. Hardcoded Parameters from 7th Place Solution
-# =============================================================================
 
 TT_PER_LAB_NN = {'AdaptableSnail': {'approach': 0.78,
   'attack': 0.59,
@@ -225,15 +220,10 @@ TRAIN_LAB_ACTIONS = {
 SELF_ACTIONS = ['rear', 'selfgroom', 'genitalgroom', 'rest', 'climb', 'dig', 'run', 'freeze', 'biteobject', 'exploreobject', 'huddle']
 PAIR_ACTIONS = ['approach', 'attack', 'avoid', 'chase', 'chaseattack', 'submit', 'shepherd', 'disengage', 'mount', 'sniff', 'sniffgenital', 'dominancemount', 'sniffbody', 'sniffface', 'attemptmount', 'intromit', 'escape', 'reciprocalsniff', 'dominance', 'allogroom', 'ejaculate', 'defend', 'dominancegroom', 'flinch', 'follow', 'tussle']
 
-# =============================================================================
-# 2. Helper Functions
-# =============================================================================
-
 def smooth_probs_inplace(probs: pd.DataFrame, actions: List[str], win: int = 5):
     if win is None or win <= 1 or probs.empty: 
         return
     act_cols = [f"action_{a}" for a in actions]
-    # Ensure sorted
     probs.sort_values(["video_id","agent_id","target_id","frame"], inplace=True)
     pad = win // 2
     kernel = np.ones(win, dtype=np.float32) / win
@@ -306,22 +296,16 @@ def probs_to_nonoverlapping_intervals(
     lab: str | None = None,
     tie_config: Dict[str, dict] | None = None,
 ) -> pd.DataFrame:
-    """
-    Convert frame-level probs to non-overlapping intervals for a *single lab*.
-    """
     out: list[dict] = []
     act_cols = [f"action_{a}" for a in actions]
 
-    # Per-lab thresholds
     per_action_thresh = TT_PER_LAB_NN.get(lab, {})
     
-    # Default threshold 0.75 if not specified
     thr = np.array(
         [per_action_thresh.get(a, 0.75) for a in actions],
         dtype=np.float32,
     )
 
-    # Optional per-lab tie rules
     lab_tie_cfg = None
     if tie_config is not None and lab is not None and lab in tie_config:
         lab_tie_cfg = tie_config[lab]
@@ -336,29 +320,25 @@ def probs_to_nonoverlapping_intervals(
 
         pass_mask = (P >= thr[None, :])
 
-        # ---- Tie manipulation (per lab) ----
         P_adj = P.copy()
         if lab_tie_cfg is not None:
             multi_mask = (pass_mask.sum(axis=1) > 1)
 
             if multi_mask.any():
-                # 1) boosts
                 boost_cfg = lab_tie_cfg.get("boost", {})
                 for act, delta in boost_cfg.items():
                     idx = action_to_idx.get(act, None)
                     if idx is not None:
                         P_adj[multi_mask, idx] += float(delta)
 
-                # 2) penalties
                 penalize_cfg = lab_tie_cfg.get("penalize", {})
                 for act, delta in penalize_cfg.items():
-                    idx = action_to_idx.get(act, None)
+                    idx = action_to_idx.get(idx, None)
                     if idx is not None:
                         P_adj[multi_mask, idx] -= float(delta)
 
-                # 3) explicit preferences
-                prefer_cfg = lab_tie_cfg.get("prefer", [])
-                for winner_act, loser_act, margin in prefer_cfg:
+                explicit_preferences = lab_tie_cfg.get("prefer", [])
+                for winner_act, loser_act, margin in explicit_preferences:
                     wi = action_to_idx.get(winner_act, None)
                     li = action_to_idx.get(loser_act, None)
                     if wi is None or li is None:
@@ -369,13 +349,11 @@ def probs_to_nonoverlapping_intervals(
 
                 np.clip(P_adj, 0.0, 1.0, out=P_adj)
 
-        # --- Best-label decoding ---
         P_masked = np.where(pass_mask, P_adj, -np.inf)
         best_idx = np.argmax(P_masked, axis=1)
         best_val = P_masked[np.arange(len(P_masked)), best_idx]
         label = np.where(np.isfinite(best_val), best_idx, -1)
 
-        # --- Fill short gaps ---
         if max_gap > 0:
             i = 0
             while i < len(label):
@@ -393,7 +371,6 @@ def probs_to_nonoverlapping_intervals(
                 else:
                     i += 1
 
-        # --- Convert label sequence to intervals ---
         def flush(s, e, idx):
             if s is None:
                 return

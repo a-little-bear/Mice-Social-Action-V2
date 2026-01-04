@@ -23,10 +23,6 @@ class FastAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal=is_causal)
 
 class MultiScaleCNN(nn.Module):
-    """
-    Multi-scale CNN from 2nd place solution.
-    Kernels: [3, 5, 7, 9]
-    """
     def __init__(self, input_dim, hidden_dim, kernels=[3, 5, 7, 9]):
         super().__init__()
         self.convs = nn.ModuleList([
@@ -39,16 +35,12 @@ class MultiScaleCNN(nn.Module):
         self.fusion = nn.Conv1d(hidden_dim * len(kernels), hidden_dim, kernel_size=1)
 
     def forward(self, x):
-        # x: [B, C, T]
         outs = [conv(x) for conv in self.convs]
         out = torch.cat(outs, dim=1)
         out = self.fusion(out)
         return out
 
 class SqueezeFormerBlock(nn.Module):
-    """
-    SqueezeFormer Block implementation.
-    """
     def __init__(self, dim, num_heads):
         super().__init__()
         self.norm1 = RMSNorm(dim)
@@ -63,16 +55,14 @@ class SqueezeFormerBlock(nn.Module):
         
         self.norm2 = RMSNorm(dim)
         self.conv = nn.Sequential(
-            nn.Conv1d(dim, dim, 3, padding=1, groups=dim), # Depthwise
+            nn.Conv1d(dim, dim, 3, padding=1, groups=dim), 
             nn.GELU(),
-            nn.Conv1d(dim, dim, 1) # Pointwise
+            nn.Conv1d(dim, dim, 1) 
         )
     
     def forward(self, x):
-        # x: [B, T, C]
         B, T, C = x.shape
         
-        # Attention
         res = x
         x = self.norm1(x)
         
@@ -87,7 +77,6 @@ class SqueezeFormerBlock(nn.Module):
         
         x = x + res
         
-        # Conv
         res = x
         x = self.norm2(x)
         x = x.transpose(1, 2)
@@ -105,42 +94,44 @@ class WaveNetBlock(nn.Module):
         self.res_conv = nn.Conv1d(channels, channels, 1)
 
     def forward(self, x):
+        res = x
         filter_out = torch.tanh(self.filter_conv(x))
         gate_out = torch.sigmoid(self.gate_conv(x))
         x = filter_out * gate_out
         s = self.skip_conv(x)
         r = self.res_conv(x)
-        return r, s
+        return r + res, s
 
 class WaveNet(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers=4):
+    def __init__(self, input_dim, hidden_dim, num_layers=8):
         super().__init__()
         self.start_conv = nn.Conv1d(input_dim, hidden_dim, 1)
         self.blocks = nn.ModuleList([
-            WaveNetBlock(hidden_dim, 3, 2**i) for i in range(num_layers)
+            WaveNetBlock(hidden_dim, 3, 2**(i % 8)) for i in range(num_layers)
         ])
-        self.end_conv = nn.Conv1d(hidden_dim, hidden_dim, 1)
+        self.end_conv = nn.Sequential(
+            nn.ReLU(),
+            nn.Conv1d(hidden_dim, hidden_dim, 1),
+            nn.ReLU(),
+            nn.Conv1d(hidden_dim, hidden_dim, 1)
+        )
 
     def forward(self, x):
-        # x: [B, C, T]
         x = self.start_conv(x)
         skip_connections = []
         for block in self.blocks:
             x, s = block(x)
             skip_connections.append(s)
+        
         x = torch.sum(torch.stack(skip_connections), dim=0)
         x = self.end_conv(x)
         return x
 
 class TemporalEncoder(nn.Module):
-    """
-    Module B: Stream 2 - Temporal Stream
-    Supports: 1D-CNN, Transformer, WaveNet, Squeezeformer, MultiScaleCNN
-    """
     def __init__(self, config):
         super().__init__()
         self.type = config['type']
-        input_dim = config.get('input_dim', 32) # Example default
+        input_dim = config.get('input_dim', 32) 
         hidden_dim = config['hidden_dim']
         
         self.input_proj = nn.Linear(input_dim, hidden_dim)
@@ -155,35 +146,32 @@ class TemporalEncoder(nn.Module):
             self.model = MultiScaleCNN(hidden_dim, hidden_dim)
         elif self.type == 'transformer':
             encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=config.get('transformer_heads', 4), batch_first=True)
-            self.model = nn.TransformerEncoder(encoder_layer, num_layers=config.get('transformer_layers', 4))
+            self.model = nn.TransformerEncoder(encoder_layer, num_layers=config.get('num_layers', 4))
         elif self.type == 'squeezeformer':
-            # Stack multiple SqueezeFormer blocks
             self.model = nn.Sequential(*[
                 SqueezeFormerBlock(hidden_dim, config.get('transformer_heads', 4)) 
-                for _ in range(config.get('transformer_layers', 4))
+                for _ in range(config.get('num_layers', 4))
             ])
         elif self.type == 'bi_lstm':
             self.model = nn.LSTM(
                 input_size=hidden_dim,
                 hidden_size=hidden_dim,
-                num_layers=config.get('lstm_layers', 2),
+                num_layers=config.get('num_layers', 2),
                 batch_first=True,
                 bidirectional=True
             )
-            # Output dim will be hidden_dim * 2
         elif self.type == 'wavenet':
-            self.model = WaveNet(hidden_dim, hidden_dim)
+            self.model = WaveNet(hidden_dim, hidden_dim, num_layers=config.get('num_layers', 8))
         else:
             raise ValueError(f"Unknown temporal encoder type: {self.type}")
 
     def forward(self, x):
-        # x: [B, T, C]
         x = self.input_proj(x)
         
         if self.type in ['1d_cnn', 'multi_scale_cnn', 'wavenet']:
-            x = x.transpose(1, 2) # [B, C, T]
+            x = x.transpose(1, 2) 
             x = self.model(x)
-            x = x.transpose(1, 2) # [B, T, C]
+            x = x.transpose(1, 2) 
         elif self.type == 'bi_lstm':
             x, _ = self.model(x)
         else:

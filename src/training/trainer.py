@@ -22,11 +22,8 @@ class Trainer:
         self.post_processor = PostProcessor(config['post_processing'])
         
         if self.feature_generator:
-            # No need to move to device yet, will be done in train_epoch if needed
-            # but actually FeatureGenerator is just a collection of torch ops
             pass
         
-        # Check for fused AdamW support
         use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         extra_args = dict(fused=True) if use_fused else dict()
 
@@ -72,7 +69,6 @@ class Trainer:
         total_loss = 0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         
-        # Debug: Print stats for the first batch
         first_batch = True
         
         for batch in pbar:
@@ -81,13 +77,8 @@ class Trainer:
             keypoints = keypoints.to(self.device, non_blocking=True)
             labels = labels.to(self.device, non_blocking=True)
             
-            # Handle NaNs for target generation to avoid issues in compiled kernels
             labels_fixed = torch.nan_to_num(labels, nan=0.0)
             
-            # Features are now generated inside the model's forward pass
-            
-            # Convert lab_ids and subject_ids to tensors if they aren't already
-            # This avoids graph breaks in torch.compile
             if not isinstance(lab_ids, torch.Tensor):
                 model_to_check = self.model
                 if hasattr(model_to_check, '_orig_mod'):
@@ -107,25 +98,19 @@ class Trainer:
             
             self.optimizer.zero_grad(set_to_none=True)
             
-            # Dynamic pos_weight calculation (Optimization from Mice-Social-Action)
             if self.config['training'].get('dynamic_pos_weight', False):
-                # labels_fixed: [B, T, C]
                 pos = labels_fixed.sum(dim=(0, 1))
                 neg = (1.0 - labels_fixed).sum(dim=(0, 1))
-                # Calculate ratio per class, cap at 1000 to avoid extreme gradients
                 new_pos_weight = (neg / (pos + 1e-6)).clamp(min=1.0, max=1000.0)
                 
                 if hasattr(self.criterion, 'pos_weight'):
                     self.criterion.pos_weight = new_pos_weight
                 elif isinstance(self.criterion, nn.BCEWithLogitsLoss):
-                    # BCEWithLogitsLoss pos_weight is not easily updatable after init
-                    # but we can use the functional version or re-init
                     self.criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=new_pos_weight)
 
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = self.model(keypoints, lab_ids, subject_ids)
                 
-                # Compute mask early
                 mask = None
                 if self.config['training']['mask_unlabeled']:
                     mask = ~torch.isnan(labels).any(dim=-1) if labels.ndim == 3 else ~torch.isnan(labels)
@@ -144,9 +129,7 @@ class Trainer:
                     else:
                         cls_loss = self.criterion(logits, labels_fixed)
                     
-                    # If OHEM, cls_loss is already scalar mean. If not, it might be tensor.
                     if cls_loss.ndim > 0 and mask is not None and self.config['training']['loss_type'] not in ['soft_f1', 'softmax']:
-                         # Apply mask to cls_loss if it hasn't been reduced yet
                          while mask.ndim < cls_loss.ndim:
                             mask = mask.unsqueeze(-1)
                          cls_loss = torch.where(mask, cls_loss, torch.zeros_like(cls_loss))
@@ -168,16 +151,12 @@ class Trainer:
                     else:
                         loss = self.criterion(logits, labels_fixed)
                 
-                # Apply mask if loss is not already reduced (OHEM reduces internally)
                 if self.config['training']['mask_unlabeled'] and self.config['training']['loss_type'] not in ['soft_f1', 'ohem']:
                     if loss.ndim > 0:
-                        # Ensure mask matches loss dimensions for broadcasting
                         while mask.ndim < loss.ndim:
                             mask = mask.unsqueeze(-1)
                         
-                        # Use torch.where for more stable compilation of masked loss
                         loss = torch.where(mask, loss, torch.zeros_like(loss))
-                        # Calculate denominator based on actual masked elements
                         denom = mask.expand_as(loss).sum()
                         loss = loss.sum() / (denom + 1e-6)
                 elif loss.ndim > 0:
@@ -185,7 +164,6 @@ class Trainer:
                 
             loss.backward()
             
-            # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
             self.optimizer.step()
@@ -200,14 +178,12 @@ class Trainer:
             self.post_processor = post_processor
 
         self.model.eval()
-        # lab_stats will store [C, 3] arrays where 3 is (tp, fp, fn)
         lab_stats = defaultdict(lambda: None)
         
         all_probs = []
         all_targets = []
         all_lab_ids = []
         
-        # Only run full post-processing every N epochs or on the last epoch
         eval_interval = self.config['training'].get('eval_interval', 10)
         is_full_eval_epoch = (epoch + 1) % eval_interval == 0 or (epoch + 1) == self.config['training']['epochs']
         
@@ -226,7 +202,6 @@ class Trainer:
                 
                 keypoints = keypoints.to(self.device)
                 
-                # Convert lab_ids and subject_ids to tensors for the model
                 if not isinstance(lab_ids, torch.Tensor):
                     model_to_check = self.model
                     if hasattr(model_to_check, '_orig_mod'):
@@ -255,7 +230,6 @@ class Trainer:
                 probs = torch.sigmoid(logits)
                 
                 if collect_all:
-                    # Optimization: Store as float16 to save 50% RAM in the accumulation list
                     all_probs.append(probs.half().cpu())
                     all_targets.append(labels.half().cpu())
                     
@@ -264,7 +238,6 @@ class Trainer:
                     else:
                         all_lab_ids.extend(lab_ids)
                 else:
-                    # Incremental stats (Fast, Low Memory)
                     preds_bin = (probs > 0.5).float()
                     preds_np = preds_bin.cpu().numpy()
                     targets_np = labels.cpu().numpy()
@@ -276,41 +249,27 @@ class Trainer:
 
                     B, T, C = preds_np.shape
                     
-                    # Vectorized stats accumulation
                     unique_labs = np.unique(lab_ids_np)
                     for lab in unique_labs:
-                        # Select batch items for this lab
                         batch_mask = (lab_ids_np == lab)
                         
-                        # [N_lab, T, C]
                         p_lab = preds_np[batch_mask]
                         t_lab = targets_np[batch_mask]
                         
-                        # Mask invalid frames
-                        # t_lab is [N_lab, T, C]
-                        # valid_mask is [N_lab, T]
                         valid_mask = ~np.isnan(t_lab).any(axis=-1)
                         
                         if not np.any(valid_mask):
                             continue
                             
-                        # Flatten valid frames: [N_valid, C]
                         p_flat = p_lab[valid_mask]
                         t_flat = t_lab[valid_mask]
                         
-                        # Calculate stats for all classes at once
-                        # p_flat, t_flat are binary (0 or 1)
-                        
-                        # TP: p=1, t=1
                         tp = (p_flat * t_flat).sum(axis=0)
                         
-                        # FP: p=1, t=0
                         fp = (p_flat * (1 - t_flat)).sum(axis=0)
                         
-                        # FN: p=0, t=1
                         fn = ((1 - p_flat) * t_flat).sum(axis=0)
                         
-                        # Update stats
                         if lab_stats[lab] is None:
                             lab_stats[lab] = np.zeros((C, 3), dtype=np.int64)
                         
@@ -321,7 +280,6 @@ class Trainer:
         if collect_all:
             print("\n[Post-Processing] Concatenating predictions (Memory-efficient)...")
             
-            # Pre-allocate numpy arrays in float16 to save memory
             N_total = sum(p.shape[0] for p in all_probs)
             T, C = all_probs[0].shape[1:]
             
@@ -337,74 +295,56 @@ class Trainer:
                 full_targets[curr:curr+batch_n] = t.numpy()
                 curr += batch_n
                 
-            # Clear lists to free memory
             del all_probs
             del all_targets
             gc.collect()
             
-            # Apply smoothing once on the full dataset if enabled
             if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
                 print(f"[Post-Processing] Applying smoothing to full validation set...")
                 full_probs = self.post_processor.apply_smoothing(full_probs, verbose=True)
 
-            # N_total, T, C = full_probs.shape # Already defined above
-            
-            # Flatten for processing: [N*T, C]
-            # These are views, they don't use extra memory yet
             flat_probs_view = full_probs.reshape(-1, C)
             flat_targets_view = full_targets.reshape(-1, C)
             
-            # Handle lab_ids
             if len(all_lab_ids) > 0 and isinstance(all_lab_ids[0], torch.Tensor):
                 full_lab_ids = torch.cat(all_lab_ids, dim=0).numpy()
             else:
                 full_lab_ids = np.array(all_lab_ids)
             
-            # Expand lab_ids to match flattened shape
             flat_lab_ids = np.repeat(full_lab_ids, T)
             del full_lab_ids
             
-            # Mask invalid frames (Memory-critical step)
             print("[Post-Processing] Masking invalid frames...")
             valid_mask = ~np.isnan(flat_targets_view).any(axis=-1)
             
-            # 1. Filter Probs and free original
             flat_probs = flat_probs_view[valid_mask]
             del full_probs
             gc.collect()
             
-            # 2. Filter Targets and free original
             flat_targets = flat_targets_view[valid_mask]
             del full_targets
             gc.collect()
             
-            # 3. Filter Lab IDs
             flat_lab_ids = flat_lab_ids[valid_mask]
             gc.collect()
             
-            # 1. Optimize/Load Thresholds
-            # We pass classes to support 'kaggle' strategy which needs action names
             classes = getattr(self.train_loader.dataset, 'classes', None)
             self.post_processor.optimize_thresholds(flat_probs, flat_targets, flat_lab_ids, classes=classes)
             
-            # 2. Apply Tie Breaking or Thresholds
             if self.config['post_processing'].get('tie_breaking', 'none') != 'none':
                 final_preds = self.post_processor.apply_tie_breaking(flat_probs, flat_lab_ids)
             else:
                 final_preds = self.post_processor.apply_thresholds(flat_probs, flat_lab_ids)
             
-            # 3. Compute F1
             results = self.post_processor.calculate_f1_scores(final_preds, flat_targets, flat_lab_ids)
             final_f1 = results['overall']
             
-            # Final cleanup
             del flat_probs, flat_targets, flat_lab_ids, final_preds
             gc.collect()
             torch.cuda.empty_cache()
             
             return final_f1, None, None
 
-        # Compute F1 from accumulated stats (Incremental Mode)
         lab_scores = []
         for lab, stats in lab_stats.items():
             if stats is None:
@@ -413,11 +353,8 @@ class Trainer:
             fp = stats[:, 1]
             fn = stats[:, 2]
             denom = 2 * tp + fp + fn
-            # Vectorized F1 for all classes in this lab
             f1s = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom != 0)
             
-            # Filter out classes that have NO positive samples in the ground truth (TP + FN == 0)
-            # This aligns with the official metric logic
             positives = tp + fn
             present_classes = (positives > 0)
             
