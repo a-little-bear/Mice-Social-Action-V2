@@ -3,12 +3,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=1, gamma=2, reduction='mean', pos_weight=None):
+    def __init__(self, alpha=0.25, gamma=2, reduction='mean', pos_weight=None):
         super(FocalLoss, self).__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
-        self.pos_weight = pos_weight
+        if pos_weight is not None:
+            self.register_buffer('pos_weight', pos_weight)
+        else:
+            self.pos_weight = None
 
     def forward(self, inputs, targets):
         bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
@@ -17,13 +20,13 @@ class FocalLoss(nn.Module):
         focal_term = (1 - pt) ** self.gamma
         
         if self.pos_weight is not None:
-            if self.pos_weight.device != inputs.device:
-                self.pos_weight = self.pos_weight.to(inputs.device)
-                
+            # Use pos_weight for class balancing (common in multi-label)
             weight = torch.where(targets == 1, self.pos_weight, torch.ones_like(self.pos_weight))
             loss = weight * focal_term * bce_loss
         else:
-            loss = self.alpha * focal_term * bce_loss
+            # Standard alpha balancing
+            alpha_t = torch.where(targets == 1, self.alpha, 1 - self.alpha)
+            loss = alpha_t * focal_term * bce_loss
 
         if self.reduction == 'mean':
             return loss.mean()

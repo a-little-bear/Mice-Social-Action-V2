@@ -46,7 +46,9 @@ class Trainer:
         elif loss_type == 'focal':
             pos_weight_val = float(config['training'].get('pos_weight', 1.0))
             pos_weight = torch.tensor(pos_weight_val, device=device)
-            self.criterion = FocalLoss(reduction='none', pos_weight=pos_weight)
+            gamma = float(config['training'].get('focal_gamma', 2.0))
+            alpha = float(config['training'].get('focal_alpha', 0.25))
+            self.criterion = FocalLoss(reduction='none', pos_weight=pos_weight, gamma=gamma, alpha=alpha)
         elif loss_type == 'soft_f1':
             self.criterion = MacroSoftF1Loss(num_classes=num_classes)
         elif loss_type == 'macro_soft_f1':
