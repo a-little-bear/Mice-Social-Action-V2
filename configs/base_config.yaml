@@ -18,7 +18,7 @@ data:
   cache_size: 8 # Ignored when preload is true.
   
   sampling:
-    strategy: "action_rich" # Options: "uniform", "action_rich" (oversample rare classes)
+    strategy: "uniform" # Options: "uniform", "action_rich" (oversample rare classes)
     bias_factor: 5.0
 
   preprocessing:
@@ -29,7 +29,7 @@ data:
     view: "egocentric" # Options: "allocentric", "egocentric" (mouse-centered)
     
   features:
-    enable_strong_features: false
+    enable_strong_features: true
     use_distances: true
     use_velocity: true
     use_acceleration: true
