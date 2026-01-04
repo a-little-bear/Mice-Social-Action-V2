@@ -29,7 +29,7 @@ data:
     view: "egocentric" # Options: "allocentric", "egocentric" (mouse-centered)
     
   features:
-    enable_strong_features: true
+    enable_strong_features: false
     use_distances: true
     use_velocity: true
     use_acceleration: true

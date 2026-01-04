@@ -415,7 +415,16 @@ class Trainer:
             denom = 2 * tp + fp + fn
             # Vectorized F1 for all classes in this lab
             f1s = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom != 0)
-            lab_scores.append(np.mean(f1s))
+            
+            # Filter out classes that have NO positive samples in the ground truth (TP + FN == 0)
+            # This aligns with the official metric logic
+            positives = tp + fn
+            present_classes = (positives > 0)
+            
+            if present_classes.sum() == 0:
+                lab_scores.append(0.0)
+            else:
+                lab_scores.append(np.mean(f1s[present_classes]))
         
         final_f1 = np.mean(lab_scores) if lab_scores else 0.0
         
