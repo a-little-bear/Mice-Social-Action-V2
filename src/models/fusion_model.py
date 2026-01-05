@@ -3,6 +3,7 @@ import torch.nn as nn
 from .encoders.temporal import TemporalEncoder
 from .encoders.spatial import SpatialGNN
 from .components.lca import LabContextAdapter
+from .components.fusion import AttentionFusion, GatedFusion
 from src.data.features import FeatureGenerator
 
 class HHSTFModel(nn.Module):
@@ -32,15 +33,30 @@ class HHSTFModel(nn.Module):
                 config=config['context_adapter']
             )
             
-        fusion_dim = config['temporal_backbone']['hidden_dim']
+        temporal_dim = config['temporal_backbone']['hidden_dim']
+        fusion_type = config['fusion'].get('type', 'concat')
+        fusion_hidden_dim = config['fusion'].get('hidden_dim', 1024)
+        
+        self.fusion_module = None
+        final_dim = temporal_dim
+        
         if self.context_adapter:
-            fusion_dim += config['context_adapter']['embedding_dim']
+            context_dim = config['context_adapter']['embedding_dim']
             
-        self.classifier = nn.Linear(fusion_dim, config['classifier']['num_classes'])
+            if fusion_type == 'attention':
+                self.fusion_module = AttentionFusion(temporal_dim, context_dim, fusion_hidden_dim)
+                final_dim = fusion_hidden_dim
+            elif fusion_type == 'gated':
+                self.fusion_module = GatedFusion(temporal_dim, context_dim, fusion_hidden_dim)
+                final_dim = fusion_hidden_dim
+            else: # concat
+                final_dim += context_dim
+            
+        self.classifier = nn.Linear(final_dim, config['classifier']['num_classes'])
         
         self.two_stage_head = None
         if config.get('two_stage', {}).get('enabled', False):
-            self.two_stage_head = nn.Linear(fusion_dim, 1)
+            self.two_stage_head = nn.Linear(final_dim, 1)
 
     def forward(self, x, lab_ids=None, subject_ids=None):
         if self.feature_generator:
@@ -56,8 +72,13 @@ class HHSTFModel(nn.Module):
         
         if self.context_adapter and lab_ids is not None:
             context = self.context_adapter(lab_ids)
-            context = context.unsqueeze(1).expand(-1, features.shape[1], -1)
-            features = torch.cat([features, context], dim=-1)
+            
+            if self.fusion_module:
+                features = self.fusion_module(features, context)
+            else:
+                # Default concat behavior
+                context_expanded = context.unsqueeze(1).expand(-1, features.shape[1], -1)
+                features = torch.cat([features, context_expanded], dim=-1)
             
         logits = self.classifier(features)
         
