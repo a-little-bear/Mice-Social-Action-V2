@@ -278,16 +278,31 @@ class MABeDataset(Dataset):
             # Optimization: Pre-calculate indices for the whole dataframe if possible
             if mapping_active:
                 comp_list = composite_actions.values
-                # 兼容性匹配：尝试 0,1,attack 和 0.0,1.0,attack 以及单独的 action
+                # 兼容性匹配：将 Parquet 的 '0,1,attack' 映射到 CSV 的 'mouse1,mouse2,attack'
                 target_indices = []
                 for c, a in zip(comp_list, actions):
+                    # 尝试直接匹配 (0,1,attack)
                     idx = self.class_to_idx.get(c)
+                    
                     if idx is None:
-                        # 尝试去空格或处理潜在的 float 字符串残留
-                        c_clean = c.replace(".0,", ",").replace(".0,", ",") # 处理 0.0,1.0 这种情况
-                        idx = self.class_to_idx.get(c_clean)
+                        # 转换格式：'0,1,attack' -> 'mouse1,mouse2,attack'
+                        try:
+                            parts = c.split(',')
+                            if len(parts) == 3:
+                                m1 = f"mouse{int(float(parts[0])) + 1}"
+                                m2 = f"mouse{int(float(parts[1])) + 1}"
+                                # 如果是自指 (e.g., 2,2,rear -> mouse3,self,rear)
+                                if parts[0] == parts[1]:
+                                    m2 = "self"
+                                c_mapped = f"{m1},{m2},{parts[2]}"
+                                idx = self.class_to_idx.get(c_mapped)
+                        except:
+                            pass
+                            
                     if idx is None:
+                        # 兜底匹配原始动作名
                         idx = self.class_to_idx.get(a)
+                        
                     target_indices.append(idx)
                 
                 # Debugging first few matches
@@ -295,9 +310,10 @@ class MABeDataset(Dataset):
                     MABeDataset._map_logged = getattr(MABeDataset, "_map_logged", 0) + 1
                     matches = [i for i in target_indices if i is not None]
                     print(f"DEBUG Mapping (File {MABeDataset._map_logged}): Found {len(matches)}/{len(target_indices)} valid action indices.")
-                    if len(matches) == 0 and len(comp_list) > 0:
-                        print(f"Sample Parquet: {comp_list[0]}")
-                        print(f"Sample Classes: {list(self.class_to_idx.keys())[:3]}")
+                    if len(matches) > 0 and MABeDataset._map_logged == 1:
+                        # 打印成功的例子
+                        first_match_idx = target_indices.index(matches[0])
+                        print(f"Success! Mapped '{comp_list[first_match_idx]}' to index {matches[0]}")
             else:
                 target_indices = [self.class_to_idx.get(a) for a in actions]
             
