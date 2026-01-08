@@ -204,9 +204,11 @@ class MABeDataset(Dataset):
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         def _preload_task(x):
                             # x = (tracking_path, lab_id, video_id, annotation_path)
-                            kps = self._load_video(x[0], x[1], x[2])
-                            if kps is not None and x[3] and os.path.exists(x[3]):
-                                self._load_full_labels(x[3], x[2], kps.shape[0])
+                            result = self._load_video(x[0], x[1], x[2])
+                            if result is not None:
+                                kps, mouse_map = result
+                                if x[3] and os.path.exists(x[3]):
+                                    self._load_full_labels(x[3], x[2], kps.shape[0], mouse_map=mouse_map)
                             return True
                         
                         list(tqdm(executor.map(_preload_task, preload_args), 
