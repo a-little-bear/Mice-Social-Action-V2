@@ -47,7 +47,8 @@ class FeatureGenerator(nn.Module):
             B, T, M, K, C = keypoints.shape
             flat_kps = keypoints.view(B, T, M*K, C)
             diff = flat_kps.unsqueeze(3) - flat_kps.unsqueeze(2)
-            dist_matrix = torch.norm(diff, dim=-1)
+            # Use safe sqrt to avoid NaN gradients when distance is 0
+            dist_matrix = torch.sqrt(torch.sum(diff**2, dim=-1) + 1e-8)
             num_points = dist_matrix.shape[2]
             triu_indices = torch.triu_indices(num_points, num_points, offset=1).to(keypoints.device)
             distances = dist_matrix[:, :, triu_indices[0], triu_indices[1]]
@@ -58,7 +59,8 @@ class FeatureGenerator(nn.Module):
             else:
                 flat_kps = keypoints
             diff = flat_kps.unsqueeze(2) - flat_kps.unsqueeze(1)
-            dist_matrix = torch.norm(diff, dim=-1)
+            # Use safe sqrt to avoid NaN gradients when distance is 0
+            dist_matrix = torch.sqrt(torch.sum(diff**2, dim=-1) + 1e-8)
             num_points = dist_matrix.shape[1]
             triu_indices = torch.triu_indices(num_points, num_points, offset=1).to(keypoints.device)
             distances = dist_matrix[:, triu_indices[0], triu_indices[1]]
