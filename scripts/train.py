@@ -87,12 +87,24 @@ def run_fold(config, train_loader, val_loader, device, fold_idx=None, input_dim=
     
     try:
         best_f1 = 0.0
+        stop_threshold = config['training'].get('stop_loss_threshold', 0.0)
+        
         for epoch in range(config['training']['epochs']):
+            is_last_epoch = (epoch == config['training']['epochs'] - 1)
             train_loss = trainer.train_epoch(epoch)
-            val_f1, _, _ = trainer.validate(epoch, post_processor)
+            
+            # Check early stopping first to see if this is the "final" execution
+            should_stop = stop_threshold > 0 and train_loss <= stop_threshold
+            
+            # If it's the last epoch or we are stopping early, force full post-processing
+            val_f1, _, _ = trainer.validate(epoch, post_processor, force_full=(is_last_epoch or should_stop))
             
             print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val F1 = {val_f1:.4f}")
             
+            if should_stop:
+                print(f"Early stopping: Train loss {train_loss:.6f} reached threshold {stop_threshold}")
+                break
+                
             if val_f1 > best_f1:
                 best_f1 = val_f1
                 save_dir = config['training']['save_dir']

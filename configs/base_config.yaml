@@ -48,7 +48,7 @@ data:
 model:
   spatial_encoder:
     enabled: true
-    type: "spatialGNN" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
+    type: "st_gcn" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
     use_adj: false # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128
@@ -80,6 +80,7 @@ training:
   optimizer: "fused_adamw"
   epochs: 50
   eval_interval: 10
+  stop_loss_threshold: 0.0001
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"

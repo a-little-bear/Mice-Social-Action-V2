@@ -175,7 +175,7 @@ class Trainer:
             
         return total_loss / len(self.train_loader)
 
-    def validate(self, epoch, post_processor=None):
+    def validate(self, epoch, post_processor=None, force_full=False):
         if post_processor is not None:
             self.post_processor = post_processor
 
@@ -187,7 +187,7 @@ class Trainer:
         all_lab_ids = []
         
         eval_interval = self.config['training'].get('eval_interval', 10)
-        is_full_eval_epoch = (epoch + 1) % eval_interval == 0 or (epoch + 1) == self.config['training']['epochs']
+        is_full_eval_epoch = force_full or (epoch + 1) % eval_interval == 0 or (epoch + 1) == self.config['training']['epochs']
         
         collect_all = is_full_eval_epoch and (
             self.config['post_processing'].get('optimize_thresholds', False) or \
