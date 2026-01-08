@@ -439,48 +439,56 @@ class PostProcessor:
         return final_preds
 
     def calculate_f1_scores(self, predictions, targets, lab_ids, video_to_active_indices=None, flat_video_ids=None):
-        print(f"Calculating F1 scores using {self.n_jobs} jobs (Official MABe Logic: Video-Specific Active Only)...")
+        print(f"Calculating F1 scores using Vectorized Logic (Official MABe Style)...")
         unique_labs = np.unique(lab_ids)
+        num_classes = predictions.shape[1]
         
         def _calc_lab_f1(lab):
             mask = (lab_ids == lab)
-            lab_p = predictions[mask].copy() 
+            if not np.any(mask): return lab, 0.0
+            
+            lab_p = predictions[mask]
             lab_t = targets[mask]
             
-            # 改进：官方 F1 是针对每个视频过滤的
-            if video_to_active_indices is not None and flat_video_ids is not None:
-                lab_vids = flat_video_ids[mask]
-                unique_vids = np.unique(lab_vids)
-                
-                vid_f1s = []
-                for vid in unique_vids:
-                    vid_mask = (lab_vids == vid)
-                    v_p = lab_p[vid_mask]
-                    v_t = lab_t[vid_mask]
-                    
-                    active_idx = video_to_active_indices.get(str(vid))
-                    if active_idx is not None:
-                        # 仅保留激活类别的预测，消除不应出现的 FP
-                        inactive = np.ones(v_p.shape[1], dtype=bool)
-                        inactive[active_idx] = False
-                        v_p[:, inactive] = 0
-                        
-                        f1s = f1_score(v_t, v_p, average=None, zero_division=0.0)
-                        vid_f1s.append(f1s[active_idx])
-                
-                if not vid_f1s: 
-                    return lab, 0.0
-                # 按照 Macro F1 逻辑，先平均每个类在所有视频的表现，再对类求平均
-                # 简化处理：收集所有激活类的 F1 样本求均值
-                all_relevant_f1s = np.concatenate(vid_f1s)
-                if len(all_relevant_f1s) == 0:
-                    return lab, 0.0
-                return lab, np.mean(all_relevant_f1s)
-            else:
-                # 降级逻辑
+            # 如果没有视频 ID 信息，退回到基础计算
+            if video_to_active_indices is None or flat_video_ids is None:
                 f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
-                present_classes = (lab_t.sum(axis=0) > 0)
-                return lab, np.mean(f1s[present_classes]) if np.any(present_classes) else 0.0
+                present = (lab_t.sum(axis=0) > 0)
+                return lab, np.mean(f1s[present]) if np.any(present) else 0.0
+
+            lab_vids = flat_video_ids[mask]
+            vids, v_inv = np.unique(lab_vids, return_inverse=True)
+            num_vids = len(vids)
+            
+            # 矢量化计算 TP/FP/FN [num_vids, num_classes]
+            # 这种方式比在循环里调用 sklearn.f1_score 快几个数量级
+            tp_v = np.zeros((num_vids, num_classes), dtype=np.int64)
+            fp_v = np.zeros((num_vids, num_classes), dtype=np.int64)
+            fn_v = np.zeros((num_vids, num_classes), dtype=np.int64)
+            
+            tp_all = (lab_p == 1) & (lab_t == 1)
+            fp_all = (lab_p == 1) & (lab_t == 0)
+            fn_all = (lab_p == 0) & (lab_t == 1)
+            
+            for c in range(num_classes):
+                np.add.at(tp_v[:, c], v_inv, tp_all[:, c])
+                np.add.at(fp_v[:, c], v_inv, fp_all[:, c])
+                np.add.at(fn_v[:, c], v_inv, fn_all[:, c])
+            
+            all_vid_f1s = []
+            for i, vid in enumerate(vids):
+                active_idx = video_to_active_indices.get(str(vid))
+                if active_idx:
+                    tp = tp_v[i, active_idx]
+                    fp = fp_v[i, active_idx]
+                    fn = fn_v[i, active_idx]
+                    
+                    denom = 2 * tp + fp + fn
+                    f1s = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom != 0)
+                    all_vid_f1s.extend(f1s.tolist())
+            
+            if not all_vid_f1s: return lab, 0.0
+            return lab, np.mean(all_vid_f1s)
             
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(_calc_lab_f1)(lab) for lab in unique_labs

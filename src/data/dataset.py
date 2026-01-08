@@ -245,12 +245,16 @@ class MABeDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def _load_full_labels(self, annotation_path, video_id, total_frames):
+    def _load_full_labels(self, annotation_path, video_id, total_frames, mouse_map=None):
         """Loads all annotations for a video and stores them in a compact uint8 tensor."""
         if annotation_path in MABeDataset._label_full_cache:
             return MABeDataset._label_full_cache[annotation_path]
             
-        labels = torch.zeros((total_frames, self.num_classes), dtype=torch.uint8)
+        # If total_frames is None (during preload), we need a safe default or read from tracking?
+        # If passed from _create_label_tensor, it is passed a value.
+        limit_frames = total_frames if total_frames else 100000 
+        labels = torch.zeros((limit_frames, self.num_classes), dtype=torch.uint8)
+        
         if not os.path.exists(annotation_path):
             return labels
             
@@ -260,83 +264,107 @@ class MABeDataset(Dataset):
                 return labels
                 
             # Vectorized logic for mapping actions toIndices
-            # Handling both simple 'action' and composite 'mouseN,mouseM,action'
             mapping_active = False
-            if 'agent_id' in df.columns and 'target_id' in df.columns:
-                # MABe format: "agent,target,action". 
-                # Ensure we handle float IDs (e.g., 0.0 -> 0) to match CSV class strings
-                agents = df['agent_id'].fillna(-1).astype(int).astype(str)
-                targets_id = df['target_id'].fillna(-1).astype(int).astype(str)
-                composite_actions = agents + "," + targets_id + "," + df['action'].astype(str)
+            target_indices = []
+            
+            if 'agent_id' in df.columns and 'target_id' in df.columns and mouse_map is not None:
+                # Use mouse_map to resolve IDs
                 mapping_active = True
-            
-            # Extract basic columns once
-            starts = df['start_frame'].values.astype(int)
-            stops = df['stop_frame'].values.astype(int)
-            actions = df['action'].astype(str).values
-            
-            # Optimization: Pre-calculate indices for the whole dataframe if possible
-            if mapping_active:
-                comp_list = composite_actions.values
-                # 兼容性匹配：将 Parquet 的 '0,1,attack' 映射到 CSV 的 'mouse1,mouse2,attack'
-                target_indices = []
-                for c, a in zip(comp_list, actions):
-                    # 尝试直接匹配 (0,1,attack)
-                    idx = self.class_to_idx.get(c)
+                
+                # Convert active/target IDs to indices (0=mouse1, 1=mouse2)
+                def map_id(val):
+                    try:
+                        v_int = int(val)
+                        return mouse_map.get(v_int, -1)
+                    except:
+                        return -1
+                        
+                # Create mapped agent/target columns
+                # We can map the unique values first for speed
+                unique_ids =  pd.concat([df['agent_id'], df['target_id']]).unique()
+                id_to_idx = {uid: map_id(uid) for uid in unique_ids}
+                
+                agent_indices = df['agent_id'].map(id_to_idx)
+                target_indices_col = df['target_id'].map(id_to_idx)
+                
+                actions = df['action'].astype(str).values
+                ag_idx = agent_indices.values
+                tg_idx = target_indices_col.values
+                
+                for i in range(len(df)):
+                    a_i = ag_idx[i]
+                    t_i = tg_idx[i]
+                    act = actions[i]
                     
+                    idx = None
+                    if a_i != -1 and t_i != -1:
+                        m1 = f"mouse{a_i + 1}"
+                        if a_i == t_i:
+                             m2 = "self"
+                        else:
+                             m2 = f"mouse{t_i + 1}"
+                        
+                        comp_str = f"{m1},{m2},{act}"
+                        idx = self.class_to_idx.get(comp_str)
+                    
+                    # Fallback to direct action name if not composite or lookup failed
                     if idx is None:
-                        # 转换格式：'0,1,attack' -> 'mouse1,mouse2,attack'
-                        try:
-                            parts = c.split(',')
-                            if len(parts) == 3:
-                                m1 = f"mouse{int(float(parts[0])) + 1}"
-                                m2 = f"mouse{int(float(parts[1])) + 1}"
-                                # 如果是自指 (e.g., 2,2,rear -> mouse3,self,rear)
-                                if parts[0] == parts[1]:
-                                    m2 = "self"
-                                c_mapped = f"{m1},{m2},{parts[2]}"
-                                idx = self.class_to_idx.get(c_mapped)
-                        except:
-                            pass
-                            
-                    if idx is None:
-                        # 兜底匹配原始动作名
-                        idx = self.class_to_idx.get(a)
+                        idx = self.class_to_idx.get(act)
                         
                     target_indices.append(idx)
-                
-                # Debugging first few matches
-                if not hasattr(MABeDataset, "_map_logged") or MABeDataset._map_logged < 5:
-                    MABeDataset._map_logged = getattr(MABeDataset, "_map_logged", 0) + 1
-                    matches = [i for i in target_indices if i is not None]
-                    print(f"DEBUG Mapping (File {MABeDataset._map_logged}): Found {len(matches)}/{len(target_indices)} valid action indices.")
-                    if len(matches) > 0 and MABeDataset._map_logged == 1:
-                        # 打印成功的例子
-                        first_match_idx = target_indices.index(matches[0])
-                        print(f"Success! Mapped '{comp_list[first_match_idx]}' to index {matches[0]}")
-            else:
+                    
+            elif 'agent_id' in df.columns and 'target_id' in df.columns:
+                # MABe format but NO mouse_map available (should not happen in train)
+                # Try simple int+1 mapping logic as fallback
+                agents = df['agent_id'].fillna(-1).astype(int).astype(str)
+                targets_id = df['target_id'].fillna(-1).astype(int).astype(str)
+                actions = df['action'].astype(str).values
+                # ... skipping complex fallback, unlikely to work correctly for ordinal IDs ...
+                # just fallback to action name
                 target_indices = [self.class_to_idx.get(a) for a in actions]
+            else:
+                actions = df['action'].astype(str).values
+                target_indices = [self.class_to_idx.get(a) for a in actions]
+            
+            starts = df['start_frame'].values.astype(int)
+            stops = df['stop_frame'].values.astype(int)
             
             for i in range(len(df)):
                 target_idx = target_indices[i]
                 if target_idx is not None:
+                    # Expand labels size if frame index exceeds current buffer
+                    # This happens if total_frames was estimated poorly
+                    e = stops[i]
+                    if e > labels.shape[0]:
+                        current_limit = labels.shape[0]
+                        new_limit = max(e + 1000, int(current_limit * 1.5))
+                        padding = torch.zeros((new_limit - current_limit, self.num_classes), dtype=torch.uint8)
+                        labels = torch.cat([labels, padding], dim=0)
+
                     s = max(0, starts[i])
-                    e = min(total_frames, stops[i])
+                    e = min(labels.shape[0], stops[i])
                     if s < e:
                         labels[s:e, target_idx] = 1
             
             MABeDataset._label_full_cache[annotation_path] = labels
+            
+            if not hasattr(MABeDataset, "_map_logged") or MABeDataset._map_logged < 5:
+                MABeDataset._map_logged = getattr(MABeDataset, "_map_logged", 0) + 1
+                matches = [i for i in target_indices if i is not None]
+                status = "Ordinal Map" if mapping_active else "Direct Map"
+                print(f"DEBUG Mapping (File {MABeDataset._map_logged}): Found {len(matches)}/{len(target_indices)} valid action indices using {status}.")
+            
             return labels
         except Exception as e:
             print(f"Error processing labels for {annotation_path}: {e}")
             return labels
 
-    def _create_label_tensor(self, annotation_path, start_frame, end_frame, num_frames):
+    def _create_label_tensor(self, annotation_path, start_frame, end_frame, num_frames, mouse_map=None):
         """Now uses the pre-loaded full label tensor and slices it."""
         if annotation_path not in MABeDataset._label_full_cache:
             # Fallback for dynamic loading if not preloaded
             # We need to know the total frames; if not preloaded, we estimate or use end_frame
-            self._load_full_labels(annotation_path, None, end_frame)
+            self._load_full_labels(annotation_path, None, end_frame, mouse_map=mouse_map)
             
         full_labels = MABeDataset._label_full_cache.get(annotation_path)
         if full_labels is None:
@@ -379,7 +407,14 @@ class MABeDataset(Dataset):
             if not expected_parts:
                 expected_parts = sorted(df['bodypart'].unique())
             
-            mice = df['mouse_id'].unique()
+            # Normalize mice IDs to ints for consistency
+            mice_raw = df['mouse_id'].unique()
+            mice = []
+            for m in mice_raw:
+                try:
+                    mice.append(int(m))
+                except:
+                    mice.append(m)
             mice.sort()
             
             target_M = 2
@@ -403,6 +438,10 @@ class MABeDataset(Dataset):
             
             part_map = {p: i for i, p in enumerate(expected_parts)}
             
+            # Align dataframe column type
+            if df['mouse_id'].dtype == float:
+                 df['mouse_id'] = df['mouse_id'].astype(int)
+
             df = df[df['mouse_id'].isin(mice)]
             df = df[df['bodypart'].isin(expected_parts)]
             
@@ -413,8 +452,7 @@ class MABeDataset(Dataset):
             keypoints[f_idx, m_idx, p_idx, 0] = df['x'].values
             keypoints[f_idx, m_idx, p_idx, 1] = df['y'].values
             
-            # Memory Optimization: Avoid manual gc.collect() in short-lived threads
-            # as it can block other threads and severely slow down preloading.
+            # Memory Optimization
             del df
             
             if self.config['data']['preprocessing'].get('interpolate_nans', True):
@@ -435,9 +473,12 @@ class MABeDataset(Dataset):
                     pass
             
             keypoints = torch.from_numpy(keypoints).to(torch.bfloat16)
-            MABeDataset._video_cache[cache_key] = keypoints
             
-            return keypoints
+            # Return tuple instead of just keypoints
+            result = (keypoints, mouse_map)
+            MABeDataset._video_cache[cache_key] = result
+            
+            return result
         except Exception as e:
             print(f"Error loading {tracking_path}: {e}")
             return None
@@ -452,14 +493,17 @@ class MABeDataset(Dataset):
         end = sample_info['end']
         fps = sample_info.get('fps', 30.0)
         
-        keypoints_full = self._load_video(tracking_path, lab_id, video_id)
+        # Unpack tuple (keypoints, mouse_map)
+        video_data = self._load_video(tracking_path, lab_id, video_id)
         
-        if keypoints_full is None:
+        if video_data is None:
              dummy_kps = torch.zeros(self.window_size, 2, 7, 2)
              if self.mode in ['train', 'val']:
                  dummy_labels = torch.zeros(self.window_size, self.num_classes)
                  return dummy_kps, dummy_labels, lab_id, subject_id, video_id
              return dummy_kps, lab_id, subject_id, video_id
+        
+        keypoints_full, mouse_map = video_data
              
         T_full = keypoints_full.shape[0]
         
@@ -497,7 +541,8 @@ class MABeDataset(Dataset):
                 sample_info['annotation_path'], 
                 start, 
                 end, 
-                keypoints_tensor.shape[0]
+                keypoints_tensor.shape[0],
+                mouse_map=mouse_map
             )
             
             return keypoints_tensor, label, lab_id, subject_id, video_id
