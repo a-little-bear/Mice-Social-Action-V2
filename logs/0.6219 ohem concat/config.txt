@@ -81,7 +81,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
-  loss_type: "focal" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
+  loss_type: "ohem" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
   pos_weight: 12.0
   focal_gamma: 2.0
   focal_alpha: 0.25

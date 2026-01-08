@@ -54,7 +54,7 @@ model:
     dropout: 0.1
     
   temporal_backbone:
-    type: "squeezeformer" # Options: "squeezeformer" (Attention+Conv), "wavenet" (Dilated Conv), "transformer", "multi_scale_cnn"
+    type: "wavenet" # Options: "squeezeformer" (Attention+Conv), "wavenet" (Dilated Conv), "transformer", "multi_scale_cnn"
     input_dim: 0
     hidden_dim: 512
     num_layers: 8

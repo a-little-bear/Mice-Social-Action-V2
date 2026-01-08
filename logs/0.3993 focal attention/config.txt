@@ -63,7 +63,7 @@ model:
     transformer_heads: 16
     
   fusion:
-    type: "concat" # Options: "attention" (Weighted Sum), "concat" (Concatenation), "gated"
+    type: "attention" # Options: "attention" (Weighted Sum), "concat" (Concatenation), "gated"
     hidden_dim: 1024
     
   classifier:

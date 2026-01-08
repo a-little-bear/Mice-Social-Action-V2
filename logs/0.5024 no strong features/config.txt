@@ -4,16 +4,18 @@ seed: 42
 debug: false
 test: false
 
+# Path Settings
+# For Linux/AutoDL, use absolute paths to data disk (e.g., /root/autodl-tmp/...)
 data:
-  data_dir: "/root/Mice-Social-Action-V2/data/"
-  batch_size: 2048
-  num_workers: 16
+  data_dir: "/root/Mice-Social-Action-V2/data/" # Path to the directory containing train.csv and tracking/annotation folders
+  batch_size: 2048 # Increased for RTX 6000 96GB.
+  num_workers: 16 # Increased for AutoDL high-core count.
   window_size: 64
-  preload: true
+  preload: true # Enabled! Data is only 2.63GB, safe to load into RAM.
   pin_memory: true
   prefetch_factor: 2
   persistent_workers: false
-  cache_size: 8
+  cache_size: 8 # Ignored when preload is true.
   
   sampling:
     strategy: "action_rich" # Options: "uniform", "action_rich" (oversample rare classes)
@@ -27,7 +29,7 @@ data:
     view: "egocentric" # Options: "allocentric", "egocentric" (mouse-centered)
     
   features:
-    enable_strong_features: true
+    enable_strong_features: false
     use_distances: true
     use_velocity: true
     use_acceleration: true
@@ -55,20 +57,20 @@ model:
     
   temporal_backbone:
     type: "squeezeformer" # Options: "squeezeformer" (Attention+Conv), "wavenet" (Dilated Conv), "transformer", "multi_scale_cnn"
-    input_dim: 0
-    hidden_dim: 512
-    num_layers: 8
+    input_dim: 0 # Will be set dynamically in train.py
+    hidden_dim: 512 #256
+    num_layers: 8 #6
     kernel_size: 3
     dropout: 0.2
-    transformer_heads: 16
+    transformer_heads: 16 #8
     
   fusion:
-    type: "concat" # Options: "attention" (Weighted Sum), "concat" (Concatenation), "gated"
-    hidden_dim: 1024
+    type: "attention" # Options: "attention" (Weighted Sum), "concat" (Concatenation), "gated"
+    hidden_dim: 1024 #512
     
   classifier:
-    num_classes: 76
-    hidden_dim: 512
+    num_classes: 76 # Interaction, Investigation, Other
+    hidden_dim: 512 #256
     
   context_adapter:
     enabled: true
@@ -81,29 +83,27 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
-  loss_type: "focal" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
-  pos_weight: 12.0
-  focal_gamma: 2.0
-  focal_alpha: 0.25
-  dynamic_pos_weight: false
-  ohem_percent: 0.7
+  loss_type: "bce" #"bce" # Options: "focal", "ce", "bce", "ohem", "macro_soft_f1"
+  pos_weight: 12.0 # Default weight, overridden if dynamic_pos_weight is true
+  dynamic_pos_weight: false # Enabled: Calculate pos_weight per batch based on actual ratio
+  ohem_percent: 0.7 # For OHEM loss
   mask_unlabeled: true
-  save_dir: "/root/autodl-tmp/checkpoints/"
-  torch_compile: true
+  save_dir: "/root/autodl-tmp/checkpoints/" #"checkpoints/" # Directory to save model weights and metrics
+  torch_compile: true # Enabled for RTX 6000 to maximize throughput.
 
 cross_validation:
   enabled: false
   n_folds: 5
 
 post_processing:
-  n_jobs: 8
+  n_jobs: 8 # Increased for faster processing with 110GB RAM headroom
   threshold_strategy: "optimize" # Options: "dynamic" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
-  optimize_thresholds: true
+  optimize_thresholds: true # Deprecated, kept for backward compatibility (if true and strategy is dynamic, runs grid search)
   tie_breaking: "kaggle" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:
     method: "ema" # Options: "median_filter", "ema", "none"
     window_size: 7
-    alpha: 0.3
+    alpha: 0.3 # For EMA
   gap_filling:
     max_gap: 10
     min_duration: 5

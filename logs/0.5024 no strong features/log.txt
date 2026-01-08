@@ -1,0 +1,216 @@
+
+Starting Experiment: Advanced_HHSTF_Maxed
+Using device: cuda
+Starting parallel preload of all tracking data into RAM (Mode: train)...
+Preloading Videos & Annotations: 100%|██████████| 8789/8789 [03:02<00:00, 48.12it/s]
+Preloaded 8789 videos and 847 annotations into RAM.
+Input Dim: 28, Num Classes: 76
+Starting Standard Training (Train/Val Split)...
+Data already preloaded in memory. Skipping redundant preload for mode: val
+Initializing model for Single Run...
+Compiling model with torch.compile...
+Epoch 0 [Train]: 100%|███████████████| 315/315 [00:28<00:00, 10.87it/s, loss=0.0107]
+Epoch 0 [Val]: 100%|██████████████████████████████| 275/275 [00:53<00:00,  5.18it/s]
+Epoch 0: Train Loss = 0.0224, Val F1 = 0.1952
+Epoch 1 [Train]: 100%|██████████████| 315/315 [00:24<00:00, 12.93it/s, loss=0.00903]
+Epoch 1 [Val]: 100%|██████████████████████████████| 275/275 [00:44<00:00,  6.19it/s]
+Epoch 1: Train Loss = 0.0087, Val F1 = 0.2385
+Epoch 2 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.19it/s, loss=0.00685]
+Epoch 2 [Val]: 100%|██████████████████████████████| 275/275 [00:46<00:00,  5.86it/s]
+Epoch 2: Train Loss = 0.0080, Val F1 = 0.2673
+Epoch 3 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.18it/s, loss=0.00914]
+Epoch 3 [Val]: 100%|██████████████████████████████| 275/275 [00:43<00:00,  6.26it/s]
+Epoch 3: Train Loss = 0.0077, Val F1 = 0.2703
+Epoch 4 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.17it/s, loss=0.00719]
+Epoch 4 [Val]: 100%|██████████████████████████████| 275/275 [00:44<00:00,  6.15it/s]
+Epoch 4: Train Loss = 0.0073, Val F1 = 0.2119
+Epoch 5 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.22it/s, loss=0.00536]
+Epoch 5 [Val]: 100%|██████████████████████████████| 275/275 [00:40<00:00,  6.83it/s]
+Epoch 5: Train Loss = 0.0071, Val F1 = 0.2781
+Epoch 6 [Train]: 100%|████████████████| 315/315 [00:23<00:00, 13.19it/s, loss=0.007]
+Epoch 6 [Val]: 100%|██████████████████████████████| 275/275 [00:46<00:00,  5.91it/s]
+Epoch 6: Train Loss = 0.0069, Val F1 = 0.2536
+Epoch 7 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.29it/s, loss=0.00742]
+Epoch 7 [Val]: 100%|██████████████████████████████| 275/275 [00:44<00:00,  6.14it/s]
+Epoch 7: Train Loss = 0.0069, Val F1 = 0.2725
+Epoch 8 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.30it/s, loss=0.00713]
+Epoch 8 [Val]: 100%|██████████████████████████████| 275/275 [00:52<00:00,  5.23it/s]
+Epoch 8: Train Loss = 0.0067, Val F1 = 0.2520
+Epoch 9 [Train]: 100%|██████████████| 315/315 [00:23<00:00, 13.31it/s, loss=0.00834]
+Note: Applying temporal smoothing per batch during validation to save memory.
+Epoch 9 [Val]: 100%|██████████████████████████████| 275/275 [00:19<00:00, 13.76it/s]
+
+[Post-Processing] Concatenating predictions (Memory-efficient)...
+[Post-Processing] Applying smoothing to full validation set...
+Applying temporal smoothing (method: ema) in-place...
+[Post-Processing] Masking invalid frames...
+Optimizing thresholds using 8 jobs...
+Thresholds optimized for 21 labs. Mean Best F1 (Internal): 0.0113
+Prediction Stats - Mean Prob: 0.001363, Max Prob: 0.999023
+Applying tie-breaking (method: kaggle) using 8 jobs...
+Calculating F1 scores using 8 jobs...
+Epoch 9: Train Loss = 0.0067, Val F1 = 0.3298
+Epoch 10 [Train]: 100%|██████████████| 315/315 [00:26<00:00, 11.95it/s, loss=0.0063]
+Epoch 10 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.93it/s]
+Epoch 10: Train Loss = 0.0066, Val F1 = 0.2753
+Epoch 11 [Train]: 100%|█████████████| 315/315 [00:27<00:00, 11.56it/s, loss=0.00662]
+Epoch 11 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.14it/s]
+Epoch 11: Train Loss = 0.0066, Val F1 = 0.3043
+Epoch 12 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.90it/s, loss=0.00724]
+Epoch 12 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.97it/s]
+Epoch 12: Train Loss = 0.0065, Val F1 = 0.2911
+Epoch 13 [Train]: 100%|█████████████| 315/315 [00:27<00:00, 11.51it/s, loss=0.00585]
+Epoch 13 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.08it/s]
+Epoch 13: Train Loss = 0.0064, Val F1 = 0.2782
+Epoch 14 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.09it/s, loss=0.00614]
+Epoch 14 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.95it/s]
+Epoch 14: Train Loss = 0.0063, Val F1 = 0.3030
+Epoch 15 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.04it/s, loss=0.00619]
+Epoch 15 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.00it/s]
+Epoch 15: Train Loss = 0.0062, Val F1 = 0.2904
+Epoch 16 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.11it/s, loss=0.00613]
+Epoch 16 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.93it/s]
+Epoch 16: Train Loss = 0.0062, Val F1 = 0.2738
+Epoch 17 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.05it/s, loss=0.00528]
+Epoch 17 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.90it/s]
+Epoch 17: Train Loss = 0.0061, Val F1 = 0.3216
+Epoch 18 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.08it/s, loss=0.00631]
+Epoch 18 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.01it/s]
+Epoch 18: Train Loss = 0.0060, Val F1 = 0.3014
+Epoch 19 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.06it/s, loss=0.00663]
+Note: Applying temporal smoothing per batch during validation to save memory.
+Epoch 19 [Val]: 100%|█████████████████████████████| 275/275 [00:28<00:00,  9.73it/s]
+
+[Post-Processing] Concatenating predictions (Memory-efficient)...
+[Post-Processing] Applying smoothing to full validation set...
+Applying temporal smoothing (method: ema) in-place...
+[Post-Processing] Masking invalid frames...
+Optimizing thresholds using 8 jobs...
+Thresholds optimized for 21 labs. Mean Best F1 (Internal): 0.0140
+Prediction Stats - Mean Prob: 0.001256, Max Prob: 1.000000
+Applying tie-breaking (method: kaggle) using 8 jobs...
+Calculating F1 scores using 8 jobs...
+Epoch 19: Train Loss = 0.0059, Val F1 = 0.3614
+Epoch 20 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.92it/s, loss=0.00558]
+Epoch 20 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.72it/s]
+Epoch 20: Train Loss = 0.0058, Val F1 = 0.3004
+Epoch 21 [Train]: 100%|█████████████| 315/315 [00:28<00:00, 11.05it/s, loss=0.00607]
+Epoch 21 [Val]: 100%|█████████████████████████████| 275/275 [00:36<00:00,  7.47it/s]
+Epoch 21: Train Loss = 0.0057, Val F1 = 0.3230
+Epoch 22 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.91it/s, loss=0.00489]
+Epoch 22 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.77it/s]
+Epoch 22: Train Loss = 0.0055, Val F1 = 0.3385
+Epoch 23 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.91it/s, loss=0.00615]
+Epoch 23 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.96it/s]
+Epoch 23: Train Loss = 0.0055, Val F1 = 0.3323
+Epoch 24 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.00it/s, loss=0.00488]
+Epoch 24 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.68it/s]
+Epoch 24: Train Loss = 0.0054, Val F1 = 0.3255
+Epoch 25 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.22it/s, loss=0.00458]
+Epoch 25 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.68it/s]
+Epoch 25: Train Loss = 0.0053, Val F1 = 0.3496
+Epoch 26 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.14it/s, loss=0.00545]
+Epoch 26 [Val]: 100%|█████████████████████████████| 275/275 [00:37<00:00,  7.37it/s]
+Epoch 26: Train Loss = 0.0052, Val F1 = 0.3530
+Epoch 27 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.08it/s, loss=0.00461]
+Epoch 27 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.75it/s]
+Epoch 27: Train Loss = 0.0050, Val F1 = 0.3539
+Epoch 28 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.02it/s, loss=0.00396]
+Epoch 28 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  7.97it/s]
+Epoch 28: Train Loss = 0.0049, Val F1 = 0.3613
+Epoch 29 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.04it/s, loss=0.00448]
+Note: Applying temporal smoothing per batch during validation to save memory.
+Epoch 29 [Val]: 100%|█████████████████████████████| 275/275 [00:24<00:00, 11.18it/s]
+
+[Post-Processing] Concatenating predictions (Memory-efficient)...
+[Post-Processing] Applying smoothing to full validation set...
+Applying temporal smoothing (method: ema) in-place...
+[Post-Processing] Masking invalid frames...
+Optimizing thresholds using 8 jobs...
+Thresholds optimized for 21 labs. Mean Best F1 (Internal): 0.0192
+Prediction Stats - Mean Prob: 0.001063, Max Prob: 1.000000
+Applying tie-breaking (method: kaggle) using 8 jobs...
+Calculating F1 scores using 8 jobs...
+Epoch 29: Train Loss = 0.0048, Val F1 = 0.4069
+Epoch 30 [Train]: 100%|██████████████| 315/315 [00:26<00:00, 11.90it/s, loss=0.0036]
+Epoch 30 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.66it/s]
+Epoch 30: Train Loss = 0.0047, Val F1 = 0.3767
+Epoch 31 [Train]: 100%|██████████████| 315/315 [00:26<00:00, 12.09it/s, loss=0.0046]
+Epoch 31 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.29it/s]
+Epoch 31: Train Loss = 0.0045, Val F1 = 0.3666
+Epoch 32 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.75it/s, loss=0.00421]
+Epoch 32 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.00it/s]
+Epoch 32: Train Loss = 0.0044, Val F1 = 0.3758
+Epoch 33 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.25it/s, loss=0.00454]
+Epoch 33 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.19it/s]
+Epoch 33: Train Loss = 0.0043, Val F1 = 0.3694
+Epoch 34 [Train]: 100%|█████████████| 315/315 [00:27<00:00, 11.66it/s, loss=0.00376]
+Epoch 34 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.05it/s]
+Epoch 34: Train Loss = 0.0042, Val F1 = 0.3994
+Epoch 35 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.89it/s, loss=0.00467]
+Epoch 35 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.02it/s]
+Epoch 35: Train Loss = 0.0041, Val F1 = 0.3855
+Epoch 36 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.99it/s, loss=0.00362]
+Epoch 36 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.20it/s]
+Epoch 36: Train Loss = 0.0040, Val F1 = 0.3908
+Epoch 37 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.98it/s, loss=0.00395]
+Epoch 37 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.28it/s]
+Epoch 37: Train Loss = 0.0039, Val F1 = 0.4144
+Epoch 38 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.17it/s, loss=0.00459]
+Epoch 38 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.30it/s]
+Epoch 38: Train Loss = 0.0038, Val F1 = 0.4079
+Epoch 39 [Train]: 100%|███████████████| 315/315 [00:25<00:00, 12.13it/s, loss=0.004]
+Note: Applying temporal smoothing per batch during validation to save memory.
+Epoch 39 [Val]: 100%|█████████████████████████████| 275/275 [00:23<00:00, 11.53it/s]
+
+[Post-Processing] Concatenating predictions (Memory-efficient)...
+[Post-Processing] Applying smoothing to full validation set...
+Applying temporal smoothing (method: ema) in-place...
+[Post-Processing] Masking invalid frames...
+Optimizing thresholds using 8 jobs...
+Thresholds optimized for 21 labs. Mean Best F1 (Internal): 0.0244
+Prediction Stats - Mean Prob: 0.000922, Max Prob: 1.000000
+Applying tie-breaking (method: kaggle) using 8 jobs...
+Calculating F1 scores using 8 jobs...
+Epoch 39: Train Loss = 0.0037, Val F1 = 0.4751
+Epoch 40 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.08it/s, loss=0.00362]
+Epoch 40 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.25it/s]
+Epoch 40: Train Loss = 0.0037, Val F1 = 0.4248
+Epoch 41 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.36it/s, loss=0.00345]
+Epoch 41 [Val]: 100%|█████████████████████████████| 275/275 [00:32<00:00,  8.48it/s]
+Epoch 41: Train Loss = 0.0036, Val F1 = 0.4253
+Epoch 42 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.31it/s, loss=0.00367]
+Epoch 42 [Val]: 100%|█████████████████████████████| 275/275 [00:32<00:00,  8.33it/s]
+Epoch 42: Train Loss = 0.0035, Val F1 = 0.4224
+Epoch 43 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 11.91it/s, loss=0.00359]
+Epoch 43 [Val]: 100%|█████████████████████████████| 275/275 [00:32<00:00,  8.34it/s]
+Epoch 43: Train Loss = 0.0035, Val F1 = 0.4367
+Epoch 44 [Train]: 100%|██████████████| 315/315 [00:25<00:00, 12.12it/s, loss=0.0031]
+Epoch 44 [Val]: 100%|█████████████████████████████| 275/275 [00:34<00:00,  8.06it/s]
+Epoch 44: Train Loss = 0.0034, Val F1 = 0.4329
+Epoch 45 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.10it/s, loss=0.00352]
+Epoch 45 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.17it/s]
+Epoch 45: Train Loss = 0.0034, Val F1 = 0.4369
+Epoch 46 [Train]: 100%|█████████████| 315/315 [00:26<00:00, 12.11it/s, loss=0.00331]
+Epoch 46 [Val]: 100%|█████████████████████████████| 275/275 [00:35<00:00,  7.73it/s]
+Epoch 46: Train Loss = 0.0034, Val F1 = 0.4405
+Epoch 47 [Train]: 100%|██████████████| 315/315 [00:25<00:00, 12.15it/s, loss=0.0033]
+Epoch 47 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.09it/s]
+Epoch 47: Train Loss = 0.0034, Val F1 = 0.4346
+Epoch 48 [Train]: 100%|██████████████| 315/315 [00:25<00:00, 12.13it/s, loss=0.0033]
+Epoch 48 [Val]: 100%|█████████████████████████████| 275/275 [00:33<00:00,  8.27it/s]
+Epoch 48: Train Loss = 0.0033, Val F1 = 0.4380
+Epoch 49 [Train]: 100%|█████████████| 315/315 [00:25<00:00, 12.32it/s, loss=0.00371]
+Note: Applying temporal smoothing per batch during validation to save memory.
+Epoch 49 [Val]: 100%|█████████████████████████████| 275/275 [00:26<00:00, 10.29it/s]
+
+[Post-Processing] Concatenating predictions (Memory-efficient)...
+[Post-Processing] Applying smoothing to full validation set...
+Applying temporal smoothing (method: ema) in-place...
+[Post-Processing] Masking invalid frames...
+Optimizing thresholds using 8 jobs...
+Thresholds optimized for 21 labs. Mean Best F1 (Internal): 0.0270
+Prediction Stats - Mean Prob: 0.000819, Max Prob: 1.000000
+Applying tie-breaking (method: kaggle) using 8 jobs...
+Calculating F1 scores using 8 jobs...
+Epoch 49: Train Loss = 0.0033, Val F1 = 0.5024

@@ -99,7 +99,7 @@ post_processing:
   n_jobs: 8
   threshold_strategy: "optimize" # Options: "dynamic" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
   optimize_thresholds: true
-  tie_breaking: "kaggle" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
+  tie_breaking: "none" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:
     method: "ema" # Options: "median_filter", "ema", "none"
     window_size: 7
