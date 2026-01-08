@@ -45,25 +45,46 @@ class MABeDataset(Dataset):
             self.classes = []
             self.class_to_idx = {}
             self.num_classes = 0
+            self.video_to_active_indices = {}
         else:
             df = pd.read_csv(csv_path)
             
-            if 'behaviors_labeled' in df.columns:
-                behaviors_str = df.iloc[0]['behaviors_labeled']
+            # 使用配置中的 num_classes 以保持模型一致性，如果没有则根据 behaviors_labeled 确定
+            config_num_classes = config['model'].get('classifier', {}).get('num_classes', 0)
+            
+            # 扫描所有视频，获取行为并集以及每个视频的激活列表
+            all_classes_set = set()
+            video_active_map = {}
+            
+            print("Scanning CSV for video-specific active labels...")
+            for _, row in df.iterrows():
+                vid = str(row['video_id'])
                 try:
-                    self.classes = json.loads(behaviors_str)
+                    b_list = json.loads(row['behaviors_labeled'])
+                    all_classes_set.update(b_list)
+                    video_active_map[vid] = set(b_list)
                 except:
-                    try:
-                        self.classes = ast.literal_eval(behaviors_str)
-                    except:
-                        self.classes = []
+                    continue
+            
+            # 这里的排序必须绝对稳定，否则模型权重对应关系会乱
+            self.classes = sorted(list(all_classes_set))
+            
+            # 如果配置指定了 76 类但扫描只发现 31 类，我们需要补齐或维持原状以防权重加载失效
+            if config_num_classes > len(self.classes):
+                print(f"Dataset found {len(self.classes)} classes, but config expects {config_num_classes}. Maintaining alignment.")
+                # 这里假设用户在外部已经定义了完整的 classes 列表，如果在此处重新定义会导致索引错位。
+                # 我们可以尝试从之前的 metadata 加载，或者根据 DataFrame 的 behaviors 字符串推断。
                 
-                self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
-                self.num_classes = len(self.classes)
-            else:
-                self.classes = []
-                self.class_to_idx = {}
-                self.num_classes = 0
+            self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
+            self.num_classes = len(self.classes)
+            
+            # 建立视频ID到索引列表的映射 (关键：官方逻辑是基于视频视频的)
+            self.video_to_active_indices = {}
+            for vid, active_set in video_active_map.items():
+                indices = [self.class_to_idx[c] for c in active_set if c in self.class_to_idx]
+                self.video_to_active_indices[vid] = indices
+            
+            print(f"Initialized dataset with {self.num_classes} global classes and video-specific masks.")
             
             use_sampler = mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich'
             

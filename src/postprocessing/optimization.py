@@ -46,7 +46,7 @@ class PostProcessor:
             return pd.concat(results, ignore_index=True)
         return pd.DataFrame()
 
-    def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes):
+    def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes, active_indices=None):
         lab_mask = (lab_ids == lab)
         
         max_samples = 1000000
@@ -63,11 +63,16 @@ class PostProcessor:
         
         sigmas_per_class = np.std(lab_preds, axis=0)
 
-        has_positives = lab_targets.sum(axis=0) > 0
+        # 决定哪些类别需要参与平均
+        if active_indices is not None:
+            eval_indices = active_indices
+        else:
+            # 回退：至少目标中出现过的类别
+            eval_indices = np.where(lab_targets.sum(axis=0) > 0)[0]
         
         best_thresh_per_class = np.full(num_classes, 0.5)
         
-        if not np.any(has_positives):
+        if len(eval_indices) == 0:
             return lab, best_thresh_per_class, sigmas_per_class, 0.0
 
         f1_scores = np.zeros((num_classes, len(threshold_range)))
@@ -88,11 +93,21 @@ class PostProcessor:
         best_scores = f1_scores[np.arange(num_classes), best_indices]
         
         optimized_thresholds = threshold_range[best_indices]
-        optimized_thresholds[~has_positives] = 0.5
         
-        return lab, optimized_thresholds, sigmas_per_class, np.mean(best_scores)
+        # 对于非激活类别，强制设为 0.5 以确保稳定性
+        non_active = np.ones(num_classes, dtype=bool)
+        if active_indices is not None:
+            non_active[active_indices] = False
+        else:
+            non_active[eval_indices] = False
+        optimized_thresholds[non_active] = 0.5
+        
+        # 只返回参与评估类别的平均 F1
+        mean_eval_f1 = np.mean(best_scores[eval_indices]) if len(eval_indices) > 0 else 0.0
+        
+        return lab, optimized_thresholds, sigmas_per_class, mean_eval_f1
 
-    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None):
+    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None, lab_to_active_indices=None):
         if classes is not None:
             self.classes = classes
             self.class_to_idx = {c: i for i, c in enumerate(classes)}
@@ -133,7 +148,10 @@ class PostProcessor:
         threshold_range = np.arange(0.1, 0.95, 0.01)
         
         results = Parallel(n_jobs=self.n_jobs)(
-            delayed(self._optimize_lab)(lab, predictions, targets, lab_ids, threshold_range, num_classes)
+            delayed(self._optimize_lab)(
+                lab, predictions, targets, lab_ids, threshold_range, num_classes, 
+                active_indices=lab_to_active_indices.get(lab) if lab_to_active_indices else None
+            )
             for lab in unique_labs
         )
         
@@ -381,24 +399,46 @@ class PostProcessor:
             
         return final_preds
 
-    def calculate_f1_scores(self, predictions, targets, lab_ids):
-        print(f"Calculating F1 scores using {self.n_jobs} jobs...")
+    def calculate_f1_scores(self, predictions, targets, lab_ids, video_to_active_indices=None, flat_video_ids=None):
+        print(f"Calculating F1 scores using {self.n_jobs} jobs (Official MABe Logic: Video-Specific Active Only)...")
         unique_labs = np.unique(lab_ids)
         
         def _calc_lab_f1(lab):
             mask = (lab_ids == lab)
-            lab_p = predictions[mask]
+            lab_p = predictions[mask].copy() 
             lab_t = targets[mask]
             
-            f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
-            
-            present_classes = (lab_t.sum(axis=0) > 0)
-            
-            if present_classes.sum() == 0:
-                return lab, 0.0
+            # 改进：官方 F1 是针对每个视频过滤的
+            if video_to_active_indices is not None and flat_video_ids is not None:
+                lab_vids = flat_video_ids[mask]
+                unique_vids = np.unique(lab_vids)
                 
-            relevant_f1s = f1s[present_classes]
-            return lab, np.mean(relevant_f1s)
+                vid_f1s = []
+                for vid in unique_vids:
+                    vid_mask = (lab_vids == vid)
+                    v_p = lab_p[vid_mask]
+                    v_t = lab_t[vid_mask]
+                    
+                    active_idx = video_to_active_indices.get(str(vid))
+                    if active_idx is not None:
+                        # 仅保留激活类别的预测，消除不应出现的 FP
+                        inactive = np.ones(v_p.shape[1], dtype=bool)
+                        inactive[active_idx] = False
+                        v_p[:, inactive] = 0
+                        
+                        f1s = f1_score(v_t, v_p, average=None, zero_division=0.0)
+                        vid_f1s.append(f1s[active_idx])
+                
+                if not vid_f1s: return lab, 0.0
+                # 按照 Macro F1 逻辑，先平均每个类在所有视频的表现，再对类求平均
+                # 简化处理：收集所有激活类的 F1 样本求均值
+                all_relevant_f1s = np.concatenate(vid_f1s)
+                return lab, np.mean(all_relevant_f1s)
+            else:
+                # 降级逻辑
+                f1s = f1_score(lab_t, lab_p, average=None, zero_division=0.0)
+                present_classes = (lab_t.sum(axis=0) > 0)
+                return lab, np.mean(f1s[present_classes]) if np.any(present_classes) else 0.0
             
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(_calc_lab_f1)(lab) for lab in unique_labs

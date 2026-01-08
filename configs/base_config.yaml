@@ -11,9 +11,9 @@ data:
   window_size: 64
   preload: true
   pin_memory: true
-  prefetch_factor: 2
-  persistent_workers: false
-  cache_size: 8
+  prefetch_factor: 4        # 增加预取，确保 GPU 始终有数据
+  persistent_workers: true  # 保持 worker 存活，减少 epoch 切换时的停顿
+  cache_size: 2048          # 增加缓存索引大小
   
   sampling:
     strategy: "action_rich" # Options: "uniform", "action_rich" (oversample rare classes)
@@ -45,10 +45,10 @@ data:
     time_stretch: false
     noise: 0.01
 
-model:
+model: 
   spatial_encoder:
     enabled: true
-    type: "spatialGNN" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
+    type: "gat" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
     use_adj: true # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128

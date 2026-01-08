@@ -272,14 +272,31 @@ class Trainer:
                 
                 if collect_all:
                     all_probs.append(probs.half().cpu())
-                    all_targets.append(labels.half().cpu())
+                    # 修改：标签使用 byte 减小内存占用
+                    all_targets.append(labels.cpu().byte())
                     
                     if isinstance(lab_ids, torch.Tensor):
                         all_lab_ids.append(lab_ids.cpu())
                     else:
                         all_lab_ids.extend(lab_ids)
+                    
+                    # 必须记录 video_ids 以对齐后处理评估
+                    all_video_ids.extend(video_ids)
                 else:
                     preds_bin = (probs > 0.5).float()
+                    
+                    # 【核心修改】：在训练 Epoch 的 streaming 评估中也应用 Active Masking 过滤 FP
+                    video_to_active_indices = getattr(self.val_loader.dataset, 'video_to_active_indices', None)
+                    if video_to_active_indices:
+                        for b_idx in range(len(video_ids)):
+                            v_id = str(video_ids[b_idx])
+                            if v_id in video_to_active_indices:
+                                active_idx = video_to_active_indices[v_id]
+                                # 非激活类别不参与 FP 计算，强行置零
+                                mask = torch.ones(probs.size(-1), device=self.device, dtype=torch.bool)
+                                mask[active_idx] = False
+                                preds_bin[b_idx, :, mask] = 0
+
                     preds_np = preds_bin.cpu().numpy()
                     targets_np = labels.cpu().numpy()
                     
@@ -324,20 +341,20 @@ class Trainer:
             N_total = sum(p.shape[0] for p in all_probs)
             T, C = all_probs[0].shape[1:]
             
+            # 【优化】使用 float16 和 uint8 显著降低内存占用
             full_probs = np.empty((N_total, T, C), dtype=np.float16)
-            full_targets = np.empty((N_total, T, C), dtype=np.float16)
+            full_targets = np.empty((N_total, T, C), dtype=np.uint8)
             
             curr = 0
             while all_probs:
                 p = all_probs.pop(0)
                 t = all_targets.pop(0)
                 batch_n = p.shape[0]
-                full_probs[curr:curr+batch_n] = p.numpy()
-                full_targets[curr:curr+batch_n] = t.numpy()
+                full_probs[curr:curr+batch_n] = p.numpy().astype(np.float16)
+                full_targets[curr:curr+batch_n] = t.numpy().astype(np.uint8)
                 curr += batch_n
                 
-            del all_probs
-            del all_targets
+            del all_probs, all_targets
             gc.collect()
             
             if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
@@ -356,28 +373,43 @@ class Trainer:
             del full_lab_ids
             
             print("[Post-Processing] Masking invalid frames...")
+            # 优化：通过 argmax 快速检查是否有 NaN
             valid_mask = ~np.isnan(flat_targets_view).any(axis=-1)
             
+            # 由于全量后处理需要对齐视频，我们需要重复 video_ids 以构建 flat_video_ids
+            # all_video_ids 每一个元素是一个 batch 的 video_id 列表，之前 extend 展开了
+            flat_video_ids = np.repeat(all_video_ids, T)
+            
+            # 原地截断或采样以节省内存
             flat_probs = flat_probs_view[valid_mask]
-            del full_probs
-            gc.collect()
-            
             flat_targets = flat_targets_view[valid_mask]
-            del full_targets
-            gc.collect()
-            
             flat_lab_ids = flat_lab_ids[valid_mask]
+            flat_video_ids_valid = flat_video_ids[valid_mask]
+            
+            # 清理中间大变量
+            del full_probs, full_targets, valid_mask, flat_video_ids
             gc.collect()
             
-            classes = getattr(self.train_loader.dataset, 'classes', None)
-            self.post_processor.optimize_thresholds(flat_probs, flat_targets, flat_lab_ids, classes=classes)
+            classes = getattr(self.val_loader.dataset, 'classes', None)
+            video_to_active_indices = getattr(self.val_loader.dataset, 'video_to_active_indices', None)
+            
+            self.post_processor.optimize_thresholds(
+                flat_probs, flat_targets, flat_lab_ids, 
+                classes=classes, 
+                video_to_active_indices=video_to_active_indices,
+                flat_video_ids=flat_video_ids_valid
+            )
             
             if self.config['post_processing'].get('tie_breaking', 'none') != 'none':
                 final_preds = self.post_processor.apply_tie_breaking(flat_probs, flat_lab_ids)
             else:
                 final_preds = self.post_processor.apply_thresholds(flat_probs, flat_lab_ids)
             
-            results = self.post_processor.calculate_f1_scores(final_preds, flat_targets, flat_lab_ids)
+            results = self.post_processor.calculate_f1_scores(
+                final_preds, flat_targets, flat_lab_ids, 
+                video_to_active_indices=video_to_active_indices,
+                flat_video_ids=flat_video_ids_valid
+            )
             final_f1 = results['overall']
             
             del flat_probs, flat_targets, flat_lab_ids, final_preds
