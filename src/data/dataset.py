@@ -278,17 +278,26 @@ class MABeDataset(Dataset):
             # Optimization: Pre-calculate indices for the whole dataframe if possible
             if mapping_active:
                 comp_list = composite_actions.values
-                target_indices = [self.class_to_idx.get(c, self.class_to_idx.get(a)) for c, a in zip(comp_list, actions)]
+                # 兼容性匹配：尝试 0,1,attack 和 0.0,1.0,attack 以及单独的 action
+                target_indices = []
+                for c, a in zip(comp_list, actions):
+                    idx = self.class_to_idx.get(c)
+                    if idx is None:
+                        # 尝试去空格或处理潜在的 float 字符串残留
+                        c_clean = c.replace(".0,", ",").replace(".0,", ",") # 处理 0.0,1.0 这种情况
+                        idx = self.class_to_idx.get(c_clean)
+                    if idx is None:
+                        idx = self.class_to_idx.get(a)
+                    target_indices.append(idx)
                 
                 # Debugging first few matches
-                if not hasattr(MABeDataset, "_map_logged"):
-                    MABeDataset._map_logged = True
+                if not hasattr(MABeDataset, "_map_logged") or MABeDataset._map_logged < 5:
+                    MABeDataset._map_logged = getattr(MABeDataset, "_map_logged", 0) + 1
                     matches = [i for i in target_indices if i is not None]
-                    print(f"DEBUG Mapping: First 5 comp: {comp_list[:5].tolist()}")
-                    print(f"DEBUG Mapping: Found {len(matches)}/{len(target_indices)} valid action indices in this file.")
-                    if len(matches) == 0:
-                        sample_cls = list(self.class_to_idx.keys())[:3]
-                        print(f"Possible reason: No match with class list (Sample classes: {sample_cls})")
+                    print(f"DEBUG Mapping (File {MABeDataset._map_logged}): Found {len(matches)}/{len(target_indices)} valid action indices.")
+                    if len(matches) == 0 and len(comp_list) > 0:
+                        print(f"Sample Parquet: {comp_list[0]}")
+                        print(f"Sample Classes: {list(self.class_to_idx.keys())[:3]}")
             else:
                 target_indices = [self.class_to_idx.get(a) for a in actions]
             
