@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
 from .encoders.temporal import TemporalEncoder
-from .encoders.spatial import SpatialGNN
+from .encoders.spatial import SpatialEncoder
 from .components.lca import LabContextAdapter
 from .components.fusion import AttentionFusion, GatedFusion
 from src.data.features import FeatureGenerator
+from src.data.skeleton import get_mouse_skeleton_adj
 
 class HHSTFModel(nn.Module):
     def __init__(self, config, feature_generator=None):
@@ -13,11 +14,20 @@ class HHSTFModel(nn.Module):
         self.feature_generator = feature_generator
         
         self.spatial_encoder = None
+        
+        # We need adj buffer even before spatial_encoder if we want to register it properly
+        self.register_buffer('adj', None) 
+        
         if config['spatial_encoder']['enabled']:
-            self.spatial_encoder = SpatialGNN(
-                input_dim=config['temporal_backbone']['input_dim'],
-                hidden_dim=config['spatial_encoder']['hidden_dim']
-            )
+            # Use SpatialEncoder with full config
+            self.spatial_encoder = SpatialEncoder(config['spatial_encoder'])
+            
+            # Load adjacency matrix if enabled
+            if config['spatial_encoder'].get('use_adj', False):
+                num_nodes = config['spatial_encoder'].get('num_nodes', None)
+                adj = self._get_adjacency_matrix(num_nodes)
+                if adj is not None:
+                    self.register_buffer('adj', adj) # Register as buffer to move with model
             
         temporal_config = config['temporal_backbone'].copy()
         if self.spatial_encoder:
@@ -58,15 +68,20 @@ class HHSTFModel(nn.Module):
         if config.get('two_stage', {}).get('enabled', False):
             self.two_stage_head = nn.Linear(final_dim, 1)
 
+    def _get_adjacency_matrix(self, num_nodes=None):
+        if num_nodes:
+            return get_mouse_skeleton_adj(num_nodes, strategy='normalized')
+        return None
+
     def forward(self, x, lab_ids=None, subject_ids=None):
         if self.feature_generator:
             x = self.feature_generator(x)
             
         if self.spatial_encoder:
-            B, T, F = x.shape
-            x_flat = x.view(B*T, F)
-            x_spatial = self.spatial_encoder(x_flat, adj=None)
-            x = x_spatial.view(B, T, -1)
+            # spatial_encoder now handles reshaping internally if necessary
+            # We just pass x and adj
+            # adj is automatically on the correct device if registered as buffer
+            x = self.spatial_encoder(x, adj=self.adj)
             
         features = self.temporal_encoder(x)
         
