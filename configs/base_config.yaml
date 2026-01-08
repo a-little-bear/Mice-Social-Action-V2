@@ -7,12 +7,12 @@ test: false
 data:
   data_dir: "/root/Mice-Social-Action-V2/data/"
   batch_size: 2048
-  num_workers: 16
+  num_workers: 8
   window_size: 64
   preload: true
   pin_memory: true
-  prefetch_factor: 4        # 增加预取，确保 GPU 始终有数据
-  persistent_workers: true  # 保持 worker 存活，减少 epoch 切换时的停顿
+  prefetch_factor: 2        # 降低预取以释放更多内存给后处理
+  persistent_workers: false # 强力释放: epoch 结束时释放 worker 内存
   cache_size: 2048          # 增加缓存索引大小
   
   sampling:

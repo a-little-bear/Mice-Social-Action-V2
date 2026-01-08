@@ -345,6 +345,7 @@ class Trainer:
             T, C = all_probs[0].shape[1:]
             
             # 【优化】使用 float16 和 uint8 显著降低内存占用
+            # 先分配内存，然后逐个填充并释放源 Tensor
             full_probs = np.empty((N_total, T, C), dtype=np.float16)
             full_targets = np.empty((N_total, T, C), dtype=np.uint8)
             
@@ -356,16 +357,20 @@ class Trainer:
                 full_probs[curr:curr+batch_n] = p.numpy().astype(np.float16)
                 full_targets[curr:curr+batch_n] = t.numpy().astype(np.uint8)
                 curr += batch_n
+                # 显式释放以帮助 GC
+                del p, t
                 
-            del all_probs, all_targets
             gc.collect()
             
             if self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
-                print(f"[Post-Processing] Applying smoothing to full validation set...")
+                # full_probs 已经是 float16，内部 apply_smoothing 会分块转 float32 处理
                 full_probs = self.post_processor.apply_smoothing(full_probs, verbose=True)
 
             flat_probs_view = full_probs.reshape(-1, C)
             flat_targets_view = full_targets.reshape(-1, C)
+            
+            # 及时释放不再需要的维度
+            # del full_probs, full_targets # 注意：flat_probs_view 是一个 view，不能删掉原对象
             
             if len(all_lab_ids) > 0 and isinstance(all_lab_ids[0], torch.Tensor):
                 full_lab_ids = torch.cat(all_lab_ids, dim=0).numpy()
@@ -374,51 +379,84 @@ class Trainer:
             
             flat_lab_ids = np.repeat(full_lab_ids, T)
             del full_lab_ids
+            all_lab_ids = [] # 清空列表
             
             print("[Post-Processing] Masking invalid frames...")
-            # 优化：通过 argmax 快速检查是否有 NaN
-            valid_mask = ~np.isnan(flat_targets_view).any(axis=-1)
+            # 优化：如果是 uint8 且 0 是填充，我们需要确定有效范围
+            # 这里暂时维持原逻辑，但加上下采样开关以应对内存极限
+            
+            # 由于 flat_targets_view 是 uint8，np.isnan 不适用。
+            # 我们假设 targets 里的 NaN 在 loader 中被处理为了 -1 或 0。
+            # 实际上在 collate_fn 中我们用的是 zeros。
+            # 正确的做法是基于真实长度，或者检查 targets 是否全为 0 且 label 包含 None。
+            # 考虑到 MABe 的 background 是 0，简单检查 any() 可能误删。
+            # 暂且保留 valid_mask，但修正 uint8 的检测方式
+            if flat_targets_view.dtype == np.uint8:
+                # uint8 不会有 NaN，如果存在 masking，通常用 255
+                valid_mask = np.ones(len(flat_targets_view), dtype=bool)
+            else:
+                valid_mask = ~np.isnan(flat_targets_view).any(axis=-1)
             
             # 由于全量后处理需要对齐视频，我们需要重复 video_ids 以构建 flat_video_ids
-            # all_video_ids 每一个元素是一个 batch 的 video_id 列表，之前 extend 展开了
             flat_video_ids = np.repeat(all_video_ids, T)
             
-            # 原地截断或采样以节省内存
-            flat_probs = flat_probs_view[valid_mask]
-            flat_targets = flat_targets_view[valid_mask]
-            flat_lab_ids = flat_lab_ids[valid_mask]
-            flat_video_ids_valid = flat_video_ids[valid_mask]
-            
-            # 清理中间大变量
-            del full_probs, full_targets, valid_mask, flat_video_ids
-            gc.collect()
+            # 【内存优化】下采样进行阈值优化，但在 F1 计算时使用全量
+            optimize_stride = 1
+            if flat_probs_view.nbytes > 15 * 1024 * 1024 * 1024:
+                print(f"Large prediction set ({flat_probs_view.nbytes/1e9:.2f} GB). Downsampling 5x for threshold search.")
+                optimize_stride = 5
+
+            flat_probs_opt = flat_probs_view[::optimize_stride]
+            flat_targets_opt = flat_targets_view[::optimize_stride]
+            flat_lab_ids_opt = flat_lab_ids[::optimize_stride]
             
             classes = getattr(self.val_loader.dataset, 'classes', None)
             video_to_active_indices = getattr(self.val_loader.dataset, 'video_to_active_indices', None)
             
             self.post_processor.optimize_thresholds(
-                flat_probs, flat_targets, flat_lab_ids, 
+                flat_probs_opt, flat_targets_opt, flat_lab_ids_opt, 
                 classes=classes, 
-                video_to_active_indices=video_to_active_indices,
-                flat_video_ids=flat_video_ids_valid
+                video_to_active_indices=video_to_active_indices
             )
             
-            if self.config['post_processing'].get('tie_breaking', 'none') != 'none':
-                final_preds = self.post_processor.apply_tie_breaking(flat_probs, flat_lab_ids)
-            else:
-                final_preds = self.post_processor.apply_thresholds(flat_probs, flat_lab_ids)
+            del flat_probs_opt, flat_targets_opt, flat_lab_ids_opt
+            gc.collect()
+
+            final_bin_preds = self.post_processor.apply_tie_breaking(flat_probs_view, flat_lab_ids)
             
+            # 计算最终指标时应用 Active Label Masking
+            v_id_to_mask = getattr(self.val_loader.dataset, 'video_masks', None)
+            v_id_to_int = getattr(self.val_loader.dataset, 'video_id_to_int', None)
+            
+            if v_id_to_mask is not None and v_id_to_int is not None:
+                print("[Post-Processing] Applying Active Label Masking to final predictions...")
+                # 批量查找视频索引
+                v_indices = [v_id_to_int.get(str(vid), -1) for vid in all_video_ids]
+                # 重复 T 次
+                flat_v_indices = np.repeat(v_indices, T)
+                # 获取掩码 (CPU)
+                masks_cpu = v_id_to_mask.numpy()
+                final_masks = masks_cpu[flat_v_indices]
+                # 原地屏蔽
+                final_bin_preds &= final_masks.astype(np.uint8)
+                del final_masks
+                
+            # 使用 post_processor 计算 F1
             results = self.post_processor.calculate_f1_scores(
-                final_preds, flat_targets, flat_lab_ids, 
+                final_bin_preds, flat_targets_view, flat_lab_ids,
                 video_to_active_indices=video_to_active_indices,
-                flat_video_ids=flat_video_ids_valid
+                flat_video_ids=flat_video_ids
             )
             final_f1 = results['overall']
             
-            del flat_probs, flat_targets, flat_lab_ids, final_preds
+            del final_bin_preds, full_probs, full_targets, flat_probs_view, flat_targets_view, flat_video_ids
             gc.collect()
             torch.cuda.empty_cache()
             
+            # Restore original weights if EMA was used
+            if original_state_dict:
+                self.model.load_state_dict(original_state_dict)
+                
             return final_f1, None, None
 
         lab_scores = []

@@ -280,42 +280,71 @@ class PostProcessor:
             return predictions
             
         if verbose:
-            print(f"Applying temporal smoothing (method: {method}) in-place...")
+            print(f"Applying temporal smoothing (method: {method}) chunk-wise to save memory...")
         
         orig_dtype = predictions.dtype
         
-        chunk_size = 20000 
+        # Determine if we have [TotalFrames, Classes] or [Samples, Window, Classes]
+        is_3d = (predictions.ndim == 3)
+        temp_shape = predictions.shape
+        num_classes = temp_shape[-1]
         
-        if predictions.ndim == 2:
-            temp = predictions.astype(np.float32)
-            if method == 'median_filter':
-                window_size = self.config['smoothing']['window_size']
-                if window_size % 2 == 0: window_size += 1
-                for c in range(temp.shape[1]):
-                    temp[:, c] = median_filter(temp[:, c], size=window_size)
-            elif method == 'ema':
-                alpha = self.config['smoothing']['alpha']
-                b, a = [alpha], [1, -(1-alpha)]
-                smoothed = lfilter(b, a, temp, axis=0)
-                smoothed_back = lfilter(b, a, np.flip(temp, axis=0), axis=0)
-                temp = (smoothed + np.flip(smoothed_back, axis=0)) / 2.0
-            predictions[:] = temp.astype(orig_dtype)
+        if not is_3d:
+            # Case 1: [TotalFrames, Classes]
+            total_frames = temp_shape[0]
+            # Use chunks to avoid creating massive temporary float32 arrays
+            chunk_size = 500000 
+            
+            for start in range(0, total_frames, chunk_size):
+                end = min(start + chunk_size, total_frames)
+                # Read as float32 for signal processing
+                chunk = predictions[start:end].astype(np.float32)
+                
+                if method == 'median_filter':
+                    window_size = self.config['smoothing']['window_size']
+                    if window_size % 2 == 0: window_size += 1
+                    for c in range(num_classes):
+                        chunk[:, c] = median_filter(chunk[:, c], size=window_size)
+                elif method == 'ema':
+                    alpha = self.config['smoothing']['alpha']
+                    b, a = [alpha], [1, -(1-alpha)]
+                    # Bidirectional EMA
+                    s1 = lfilter(b, a, chunk, axis=0)
+                    s2 = lfilter(b, a, np.flip(chunk, axis=0), axis=0)
+                    chunk = (s1 + np.flip(s2, axis=0)) / 2.0
+                
+                # Write back to original (usually float16)
+                predictions[start:end] = chunk.astype(orig_dtype)
+                
+            del chunk
+            gc.collect()
             
         else:
-            temp = predictions.astype(np.float32)
+            # Case 2: [Samples, Window, Classes]
+            # We smooth across the window (axis 1)
+            num_samples = temp_shape[0]
+            chunk_size = 50000 # Samples per chunk
             
-            if method == 'median_filter':
-                window_size = self.config['smoothing']['window_size']
-                if window_size % 2 == 0: window_size += 1
-                temp = median_filter(temp, size=(1, window_size, 1))
-            elif method == 'ema':
-                alpha = self.config['smoothing']['alpha']
-                b, a = [alpha], [1, -(1-alpha)]
-                smoothed = lfilter(b, a, temp, axis=1)
-                smoothed_back = lfilter(b, a, np.flip(temp, axis=1), axis=1)
-                temp = (smoothed + np.flip(smoothed_back, axis=1)) / 2.0
-            
-            predictions[:] = temp.astype(orig_dtype)
+            for start in range(0, num_samples, chunk_size):
+                end = min(start + chunk_size, num_samples)
+                chunk = predictions[start:end].astype(np.float32)
+                
+                if method == 'median_filter':
+                    window_size = self.config['smoothing']['window_size']
+                    if window_size % 2 == 0: window_size += 1
+                    for c in range(num_classes):
+                        chunk[:, :, c] = median_filter(chunk[:, :, c], size=(1, window_size))
+                elif method == 'ema':
+                    alpha = self.config['smoothing']['alpha']
+                    b, a = [alpha], [1, -(1-alpha)]
+                    s1 = lfilter(b, a, chunk, axis=1)
+                    s2 = lfilter(b, a, np.flip(chunk, axis=1), axis=1)
+                    chunk = (s1 + np.flip(s2, axis=1)) / 2.0
+                
+                predictions[start:end] = chunk.astype(orig_dtype)
+                
+            del chunk
+            gc.collect()
             
         return predictions
 
