@@ -272,7 +272,6 @@ class Trainer:
                 
                 if collect_all:
                     all_probs.append(probs.half().cpu())
-                    # 修改：标签使用 byte 减小内存占用
                     all_targets.append(labels.cpu().byte())
                     
                     if isinstance(lab_ids, torch.Tensor):
@@ -280,22 +279,26 @@ class Trainer:
                     else:
                         all_lab_ids.extend(lab_ids)
                     
-                    # 必须记录 video_ids 以对齐后处理评估
                     all_video_ids.extend(video_ids)
                 else:
                     preds_bin = (probs > 0.5).float()
                     
-                    # 【核心修改】：在训练 Epoch 的 streaming 评估中也应用 Active Masking 过滤 FP
-                    video_to_active_indices = getattr(self.val_loader.dataset, 'video_to_active_indices', None)
-                    if video_to_active_indices:
-                        for b_idx in range(len(video_ids)):
-                            v_id = str(video_ids[b_idx])
-                            if v_id in video_to_active_indices:
-                                active_idx = video_to_active_indices[v_id]
-                                # 非激活类别不参与 FP 计算，强行置零
-                                mask = torch.ones(probs.size(-1), device=self.device, dtype=torch.bool)
-                                mask[active_idx] = False
-                                preds_bin[b_idx, :, mask] = 0
+                    # 【性能优化】：使用矢量化掩码代替 Python 循环
+                    ds = self.val_loader.dataset
+                    video_masks = getattr(ds, 'video_masks', None)
+                    v_id_to_int = getattr(ds, 'video_id_to_int', None)
+                    
+                    if video_masks is not None and v_id_to_int is not None:
+                        # 批量获取视频索引
+                        try:
+                            v_indices = [v_id_to_int.get(str(vid), -1) for vid in video_ids]
+                            # 创建形状为 [B, 1, C] 的掩码并广播
+                            # 注意：preds_bin 形状是 [B, T, C]
+                            batch_masks = video_masks[v_indices].to(self.device).unsqueeze(1)
+                            preds_bin = preds_bin * batch_masks 
+                        except Exception as e:
+                            # 降级逻辑以防索引错误
+                            pass
 
                     preds_np = preds_bin.cpu().numpy()
                     targets_np = labels.cpu().numpy()

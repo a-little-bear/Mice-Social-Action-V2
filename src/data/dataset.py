@@ -78,13 +78,20 @@ class MABeDataset(Dataset):
             self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
             self.num_classes = len(self.classes)
             
-            # 建立视频ID到索引列表的映射 (关键：官方逻辑是基于视频视频的)
+            # 建立视频ID到索引列表的映射 (关键：官方逻辑是基于视频的)
             self.video_to_active_indices = {}
+            # 加快验证逻辑：预计算每个视频的类别掩码 Tensor
+            self.video_id_to_int = {vid: i for i, vid in enumerate(video_active_map.keys())}
+            self.video_masks = torch.zeros((len(video_active_map), self.num_classes), dtype=torch.float32)
+            
             for vid, active_set in video_active_map.items():
                 indices = [self.class_to_idx[c] for c in active_set if c in self.class_to_idx]
                 self.video_to_active_indices[vid] = indices
+                if vid in self.video_id_to_int:
+                    v_idx = self.video_id_to_int[vid]
+                    self.video_masks[v_idx, indices] = 1.0 # 激活类别设为 1
             
-            print(f"Initialized dataset with {self.num_classes} global classes and video-specific masks.")
+            print(f"Initialized dataset with {self.num_classes} global classes and {len(self.video_masks)} precomputed masks.")
             
             use_sampler = mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich'
             
