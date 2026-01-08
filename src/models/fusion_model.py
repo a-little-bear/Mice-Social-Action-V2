@@ -64,22 +64,48 @@ class HHSTFModel(nn.Module):
         final_dim = temporal_dim
         
         if self.context_adapter:
+            # Context dim is embedding_dim (lab) + embedding_dim (subject if used)
             context_dim = config['context_adapter']['embedding_dim']
+            use_subjects = config['context_adapter'].get('use_subject_ids', False)
+            actual_context_dim = context_dim * 2 if use_subjects else context_dim
             
             if fusion_type == 'attention':
-                self.fusion_module = AttentionFusion(temporal_dim, context_dim, fusion_hidden_dim)
-                final_dim = fusion_hidden_dim
+                self.fusion_module = AttentionFusion(temporal_dim, actual_context_dim, fusion_hidden_dim)
+                final_dim = temporal_dim # Attention now keeps temporal_dim via residual
             elif fusion_type == 'gated':
-                self.fusion_module = GatedFusion(temporal_dim, context_dim, fusion_hidden_dim)
+                self.fusion_module = GatedFusion(temporal_dim, actual_context_dim, fusion_hidden_dim)
                 final_dim = fusion_hidden_dim
             else: # concat
-                final_dim += context_dim
+                final_dim += actual_context_dim
             
         self.classifier = nn.Linear(final_dim, config['classifier']['num_classes'])
         
         self.two_stage_head = None
         if config.get('two_stage', {}).get('enabled', False):
             self.two_stage_head = nn.Linear(final_dim, 1)
+        
+        # New: Standardized Weight Initialization
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            # Use Xavier Uniform for balanced signal propagation
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Embedding):
+            # Embeddings usually benefit from small normal noise
+            nn.init.normal_(m.weight, mean=0, std=0.02)
+        elif isinstance(m, nn.LayerNorm) or isinstance(m, nn.BatchNorm1d):
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+            if m.weight is not None:
+                nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv1d):
+            # Kaiming Normal for convolutional layers with ReLU/GELU
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def _get_adjacency_matrix(self, num_nodes=None):
         if num_nodes:
@@ -98,7 +124,9 @@ class HHSTFModel(nn.Module):
         features = self.temporal_encoder(x)
         
         if self.context_adapter and lab_ids is not None:
-            context = self.context_adapter(lab_ids)
+            # Check config to decide whether to pass subject_ids
+            use_subjects = self.config['context_adapter'].get('use_subject_ids', False)
+            context = self.context_adapter(lab_ids, subject_ids if use_subjects else None)
             
             if self.fusion_module:
                 features = self.fusion_module(features, context)

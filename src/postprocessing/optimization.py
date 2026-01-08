@@ -129,7 +129,8 @@ class PostProcessor:
         unique_labs = np.unique(lab_ids)
         num_classes = predictions.shape[1]
         
-        threshold_range = np.arange(0.1, 0.95, 0.05)
+        # Use a finer search step (0.01) for professional-grade optimization
+        threshold_range = np.arange(0.1, 0.95, 0.01)
         
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(self._optimize_lab)(lab, predictions, targets, lab_ids, threshold_range, num_classes)

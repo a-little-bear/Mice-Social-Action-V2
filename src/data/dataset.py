@@ -12,7 +12,7 @@ from .sampling import ActionRichSampler
 
 class MABeDataset(Dataset):
     _video_cache = {}
-    _anno_cache = {}
+    _label_full_cache = {} # New: Compact global cache for full-video labels
 
     def __init__(self, data_path, config, mode='train'):
         self.data_path = data_path
@@ -34,6 +34,7 @@ class MABeDataset(Dataset):
         
         self.data = []
         self.labels = []
+        self.class_weights = None
         self.cache_size = config['data'].get('cache_size', 128)
         self.preload = config['data'].get('preload', False)
         
@@ -156,33 +157,57 @@ class MABeDataset(Dataset):
             if len(MABeDataset._video_cache) > 0:
                 print(f"Data already preloaded in memory. Skipping redundant preload for mode: {mode}")
             else:
-                print(f"Starting parallel preload of all tracking data into RAM (Mode: {mode})...")
-                unique_videos = {}
+                print(f"Starting parallel preload of all tracking data & labels into RAM (Mode: {mode})...")
+                
+                # Get unique video/label pairs to load
+                unique_keys = set()
+                preload_args = []
                 for d in self.data:
-                    key = (d['tracking_path'], d['lab_id'], d['video_id'])
-                    unique_videos[key] = True
+                    key = (d['tracking_path'], d['lab_id'], d['video_id'], d['annotation_path'])
+                    if key not in unique_keys:
+                        unique_keys.add(key)
+                        preload_args.append(key)
                 
-                from tqdm import tqdm
-                video_list = list(unique_videos.keys())
-                
-                if not video_list:
-                    print(f"No videos found to preload for mode: {mode}")
+                if not preload_args:
+                    print(f"No data found to preload for mode: {mode}")
                 else:
-                    max_workers = min(len(video_list), 16)
+                    from tqdm import tqdm
+                    max_workers = min(len(preload_args), 16)
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         def _preload_task(x):
-                            self._load_video(*x)
-                            anno_path = os.path.join(self.data_path, 'train_annotation', x[1], f'{x[2]}.parquet')
-                            if os.path.exists(anno_path):
-                                try:
-                                    MABeDataset._anno_cache[anno_path] = pd.read_parquet(anno_path)
-                                except:
-                                    pass
+                            # x = (tracking_path, lab_id, video_id, annotation_path)
+                            kps = self._load_video(x[0], x[1], x[2])
+                            if kps is not None and x[3] and os.path.exists(x[3]):
+                                self._load_full_labels(x[3], x[2], kps.shape[0])
+                            return True
                         
-                        list(tqdm(executor.map(_preload_task, video_list), 
-                                  total=len(video_list), desc="Preloading Videos & Annotations"))
+                        list(tqdm(executor.map(_preload_task, preload_args), 
+                                  total=len(preload_args), desc="Preloading Data"))
                     
-                    print(f"Preloaded {len(MABeDataset._video_cache)} videos and {len(MABeDataset._anno_cache)} annotations into RAM.")
+                    print(f"Preloaded {len(MABeDataset._video_cache)} videos and {len(MABeDataset._label_full_cache)} label tensors.")
+                    
+                    # New: Calculate global class frequencies for 'new_focal' loss
+                    print("Calculating global class frequencies for optimized loss...")
+                    all_counts = torch.zeros(self.num_classes, dtype=torch.float64)
+                    for lbl in MABeDataset._label_full_cache.values():
+                        all_counts += lbl.sum(dim=0).to(torch.float64)
+                    
+                    self.class_counts = all_counts
+                    total_samples = all_counts.sum()
+                    if total_samples > 0:
+                        # Use a more stable weighting (log-inverse frequency or effective number of samples)
+                        # We'll use smooth inverse frequency: W = log(1 + total / (count + 1))
+                        # This avoids extreme weights while still emphasizing rare classes.
+                        weights = torch.log1p(total_samples / (all_counts + 1.0))
+                        
+                        # Normalize so mean weight is 1.0
+                        self.class_weights = (weights / weights.mean()).to(torch.float32)
+                        print(f"Computed weights for {self.num_classes} classes. Max weight: {self.class_weights.max().item():.2f}")
+                    else:
+                        self.class_weights = torch.ones(self.num_classes, dtype=torch.float32)
+                    
+                    import gc
+                    gc.collect()
 
         if mode == 'train' and config['data']['sampling']['strategy'] == 'action_rich':
             self.sampler = ActionRichSampler(self.labels, window_size=512, bias_factor=config['data']['sampling']['bias_factor'])
@@ -192,68 +217,84 @@ class MABeDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def _create_label_tensor(self, annotation_path, start_frame, end_frame, num_frames):
-        labels = torch.zeros((num_frames, self.num_classes), dtype=torch.float32)
+    def _load_full_labels(self, annotation_path, video_id, total_frames):
+        """Loads all annotations for a video and stores them in a compact uint8 tensor."""
+        if annotation_path in MABeDataset._label_full_cache:
+            return MABeDataset._label_full_cache[annotation_path]
+            
+        labels = torch.zeros((total_frames, self.num_classes), dtype=torch.uint8)
         if not os.path.exists(annotation_path):
             return labels
             
-        original_len = end_frame - start_frame
-        scale = num_frames / original_len if original_len > 0 else 1.0
-        
-        if annotation_path in MABeDataset._anno_cache:
-            df = MABeDataset._anno_cache[annotation_path]
-        else:
-            try:
-                df = pd.read_parquet(annotation_path)
-                if not self.preload and len(MABeDataset._anno_cache) >= self.cache_size:
-                    it = iter(MABeDataset._anno_cache)
-                    try:
-                        MABeDataset._anno_cache.pop(next(it))
-                    except (StopIteration, KeyError):
-                        pass
-                MABeDataset._anno_cache[annotation_path] = df
-            except:
-                return labels
-            
-        df_slice = df[
-            (df['start_frame'] < end_frame) & 
-            (df['stop_frame'] > start_frame)
-        ]
-        
-        for _, row in df_slice.iterrows():
-            try:
-                agent_id = int(row['agent_id'])
-                target_id = int(row['target_id'])
-                action = row['action']
-                
-                subject = f"mouse{agent_id + 1}"
-                if agent_id == target_id:
-                    obj = "self"
-                else:
-                    obj = f"mouse{target_id + 1}"
+        try:
+            df = pd.read_parquet(annotation_path)
+            for _, row in df.iterrows():
+                try:
+                    agent_id = int(row['agent_id'])
+                    target_id = int(row['target_id'])
+                    action = row['action']
                     
-                composite_action = f"{subject},{obj},{action}"
-            except (ValueError, KeyError):
-                composite_action = row['action'] if 'action' in row else None
+                    subject = f"mouse{agent_id + 1}"
+                    obj = "self" if agent_id == target_id else f"mouse{target_id + 1}"
+                    composite_action = f"{subject},{obj},{action}"
+                except (ValueError, KeyError):
+                    composite_action = row['action'] if 'action' in row else None
 
-            s = row['start_frame']
-            e = row['stop_frame']
-            
-            target_class = None
-            if composite_action in self.class_to_idx:
-                target_class = composite_action
-            elif 'action' in row and row['action'] in self.class_to_idx:
-                target_class = row['action']
-            
-            if target_class:
-                idx = self.class_to_idx[target_class]
-                s_w = max(0, int((s - start_frame) * scale))
-                e_w = min(num_frames, int((e - start_frame) * scale))
+                target_class = None
+                if composite_action in self.class_to_idx:
+                    target_class = composite_action
+                elif 'action' in row and row['action'] in self.class_to_idx:
+                    target_class = row['action']
                 
-                if s_w < e_w:
-                    labels[s_w:e_w, idx] = 1.0
-                             
-        return labels
+                if target_class:
+                    idx = self.class_to_idx[target_class]
+                    s = max(0, int(row['start_frame']))
+                    e = min(total_frames, int(row['stop_frame']))
+                    if s < e:
+                        labels[s:e, idx] = 1
+            
+            # Use compact representation
+            MABeDataset._label_full_cache[annotation_path] = labels
+            return labels
+        except Exception as e:
+            print(f"Error processing labels for {annotation_path}: {e}")
+            return labels
+
+    def _create_label_tensor(self, annotation_path, start_frame, end_frame, num_frames):
+        """Now uses the pre-loaded full label tensor and slices it."""
+        if annotation_path not in MABeDataset._label_full_cache:
+            # Fallback for dynamic loading if not preloaded
+            # We need to know the total frames; if not preloaded, we estimate or use end_frame
+            self._load_full_labels(annotation_path, None, end_frame)
+            
+        full_labels = MABeDataset._label_full_cache.get(annotation_path)
+        if full_labels is None:
+            return torch.zeros((num_frames, self.num_classes), dtype=torch.float32)
+
+        # Slice the relevant part
+        # Note: If frames are corrected/resampled, we need to handle that.
+        # But for 'target_fps', this slice logic should match the keypoints slicing.
+        original_len = end_frame - start_frame
+        
+        # Initial slice (raw frames)
+        s_idx = max(0, start_frame)
+        e_idx = min(full_labels.shape[0], end_frame)
+        
+        label_slice = full_labels[s_idx:e_idx]
+        
+        # If we need padding
+        if label_slice.shape[0] < original_len:
+            pad_len = original_len - label_slice.shape[0]
+            padding = torch.zeros((pad_len, self.num_classes), dtype=torch.uint8)
+            label_slice = torch.cat([label_slice, padding], dim=0)
+            
+        # Resample to match num_frames (target_fps)
+        if label_slice.shape[0] != num_frames:
+            # Simple nearest neighbor resampling for labels to preserve 0/1
+            indices = torch.linspace(0, label_slice.shape[0]-1, num_frames).long()
+            label_slice = label_slice[indices]
+            
+        return label_slice.float()
 
     def _load_video(self, tracking_path, lab_id, video_id=None):
         cache_key = (tracking_path, lab_id)
@@ -300,6 +341,11 @@ class MABeDataset(Dataset):
             
             keypoints[f_idx, m_idx, p_idx, 0] = df['x'].values
             keypoints[f_idx, m_idx, p_idx, 1] = df['y'].values
+            
+            # Memory Cleanup: Free the large dataframe as soon as data is copied
+            del df
+            import gc
+            gc.collect()
             
             if self.config['data']['preprocessing'].get('interpolate_nans', True):
                 mask = np.isnan(keypoints)

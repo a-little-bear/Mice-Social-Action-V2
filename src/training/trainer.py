@@ -5,11 +5,13 @@ import os
 import json
 import inspect
 import gc
+from copy import deepcopy
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 from collections import defaultdict
 from .losses import FocalLoss, MacroSoftF1Loss, OHEMLoss
 from ..postprocessing.optimization import PostProcessor
+from ..utils.ema import EMA
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, config, device='cuda', feature_generator=None):
@@ -49,6 +51,24 @@ class Trainer:
             gamma = float(config['training'].get('focal_gamma', 2.0))
             alpha = float(config['training'].get('focal_alpha', 0.25))
             self.criterion = FocalLoss(reduction='none', pos_weight=pos_weight, gamma=gamma, alpha=alpha)
+        elif loss_type == 'new_focal':
+            # Extract weights from Dataset
+            ds = train_loader.dataset
+            # If dataset is wrapped in a Subset, we might need to go deeper (though typically it's the direct dataset)
+            while hasattr(ds, 'dataset'):
+                ds = ds.dataset
+            
+            if hasattr(ds, 'class_weights'):
+                pos_weight = ds.class_weights.to(device)
+                print(f"Using class-aware weights for 'new_focal'. Weights mean: {pos_weight.mean().item():.4f}")
+            else:
+                pos_weight_val = float(config['training'].get('pos_weight', 1.0))
+                pos_weight = torch.tensor(pos_weight_val, device=device)
+                print("Warning: 'new_focal' requested but class_weights not found. Using default.")
+                
+            gamma = float(config['training'].get('focal_gamma', 2.0))
+            alpha = float(config['training'].get('focal_alpha', 0.25))
+            self.criterion = FocalLoss(reduction='none', pos_weight=pos_weight, gamma=gamma, alpha=alpha)
         elif loss_type == 'soft_f1':
             self.criterion = MacroSoftF1Loss(num_classes=num_classes)
         elif loss_type == 'macro_soft_f1':
@@ -65,6 +85,13 @@ class Trainer:
         
         self.best_f1 = 0.0
         self.results = []
+        
+        # New: Model Weight EMA
+        self.ema = None
+        if config['training'].get('ema_enabled', True):
+            decay = config['training'].get('ema_decay', 0.999)
+            self.ema = EMA(self.model, decay=decay)
+            print(f"Model EMA initialized with decay: {decay}")
 
     def train_epoch(self, epoch):
         self.model.train()
@@ -170,6 +197,9 @@ class Trainer:
             
             self.optimizer.step()
             
+            if self.ema:
+                self.ema.update()
+            
             total_loss += loss.item()
             pbar.set_postfix({'loss': loss.item()})
             
@@ -180,6 +210,15 @@ class Trainer:
             self.post_processor = post_processor
 
         self.model.eval()
+        
+        # New: Use EMA weights for validation if enabled
+        original_state_dict = None
+        if self.ema:
+            # Save current weights to restore after validation
+            original_state_dict = deepcopy(self.model.state_dict())
+            self.ema.apply_to(self.model)
+            print("Using EMA weights for validation")
+
         lab_stats = defaultdict(lambda: None)
         
         all_probs = []
@@ -367,6 +406,11 @@ class Trainer:
         
         final_f1 = np.mean(lab_scores) if lab_scores else 0.0
         
+        # Restore original weights if EMA was used
+        if original_state_dict:
+            self.model.load_state_dict(original_state_dict)
+            del original_state_dict
+            
         return final_f1, None, None
 
     def save_results(self, epoch, f1):

@@ -180,6 +180,7 @@ class SpatialEncoder(nn.Module):
             for gat, norm in zip(self.layers, self.norms):
                 res = x
                 x = gat(x, adj)
+                x = F.elu(x) # Added explicit activation for GAT stability
                 x = norm(x)
                 x = x + res # Residual
                 x = self.dropout_layer(x)
