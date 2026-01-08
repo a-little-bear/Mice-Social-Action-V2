@@ -263,23 +263,37 @@ class MABeDataset(Dataset):
             # Handling both simple 'action' and composite 'mouseN,mouseM,action'
             mapping_active = False
             if 'agent_id' in df.columns and 'target_id' in df.columns:
-                # MABe 2022 format: "agent_id,target_id,action" (e.g., "0,1,attack")
-                composite_actions = df['agent_id'].astype(str) + "," + df['target_id'].astype(str) + "," + df['action']
+                # MABe format: "agent,target,action". 
+                # Ensure we handle float IDs (e.g., 0.0 -> 0) to match CSV class strings
+                agents = df['agent_id'].fillna(-1).astype(int).astype(str)
+                targets_id = df['target_id'].fillna(-1).astype(int).astype(str)
+                composite_actions = agents + "," + targets_id + "," + df['action'].astype(str)
                 mapping_active = True
             
             # Extract basic columns once
             starts = df['start_frame'].values.astype(int)
             stops = df['stop_frame'].values.astype(int)
-            actions = df['action'].values
+            actions = df['action'].astype(str).values
+            
+            # Optimization: Pre-calculate indices for the whole dataframe if possible
+            if mapping_active:
+                comp_list = composite_actions.values
+                target_indices = [self.class_to_idx.get(c, self.class_to_idx.get(a)) for c, a in zip(comp_list, actions)]
+                
+                # Debugging first few matches
+                if not hasattr(MABeDataset, "_map_logged"):
+                    MABeDataset._map_logged = True
+                    matches = [i for i in target_indices if i is not None]
+                    print(f"DEBUG Mapping: First 5 comp: {comp_list[:5].tolist()}")
+                    print(f"DEBUG Mapping: Found {len(matches)}/{len(target_indices)} valid action indices in this file.")
+                    if len(matches) == 0:
+                        sample_cls = list(self.class_to_idx.keys())[:3]
+                        print(f"Possible reason: No match with class list (Sample classes: {sample_cls})")
+            else:
+                target_indices = [self.class_to_idx.get(a) for a in actions]
             
             for i in range(len(df)):
-                target_idx = None
-                if mapping_active:
-                    target_idx = self.class_to_idx.get(composite_actions.iloc[i])
-                
-                if target_idx is None:
-                    target_idx = self.class_to_idx.get(actions[i])
-                
+                target_idx = target_indices[i]
                 if target_idx is not None:
                     s = max(0, starts[i])
                     e = min(total_frames, stops[i])

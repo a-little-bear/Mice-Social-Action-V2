@@ -468,10 +468,13 @@ class PostProcessor:
                         f1s = f1_score(v_t, v_p, average=None, zero_division=0.0)
                         vid_f1s.append(f1s[active_idx])
                 
-                if not vid_f1s: return lab, 0.0
+                if not vid_f1s: 
+                    return lab, 0.0
                 # 按照 Macro F1 逻辑，先平均每个类在所有视频的表现，再对类求平均
                 # 简化处理：收集所有激活类的 F1 样本求均值
                 all_relevant_f1s = np.concatenate(vid_f1s)
+                if len(all_relevant_f1s) == 0:
+                    return lab, 0.0
                 return lab, np.mean(all_relevant_f1s)
             else:
                 # 降级逻辑
@@ -483,8 +486,10 @@ class PostProcessor:
             delayed(_calc_lab_f1)(lab) for lab in unique_labs
         )
         
-        lab_f1s = {lab: f1 for lab, f1 in results}
-        lab_f1s['overall'] = np.mean([f1 for f1 in lab_f1s.values()])
+        lab_f1s = {lab: f1 for lab, f1 in results if lab is not None}
+        
+        valid_scores = [f1 for f1 in lab_f1s.values() if not np.isnan(f1)]
+        lab_f1s['overall'] = np.mean(valid_scores) if valid_scores else 0.0
         
         return lab_f1s
 
