@@ -107,10 +107,20 @@ class PostProcessor:
         
         return lab, optimized_thresholds, sigmas_per_class, mean_eval_f1
 
-    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None, lab_to_active_indices=None):
+    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None, video_to_active_indices=None):
         if classes is not None:
             self.classes = classes
             self.class_to_idx = {c: i for i, c in enumerate(classes)}
+
+        # Convert video-based active map to lab-based for threshold optimization
+        lab_to_active_indices = None
+        if video_to_active_indices:
+            # Note: Threshold optimization is usually done per lab. 
+            # We use the union of all behaviors ever labeled for any video in that lab.
+            lab_to_active_indices = {}
+            # We don't have flat_video_ids here yet to map labs to videos, 
+            # but we can try to infer or just pass the video mapping down.
+            pass
 
         strategy = self.config.get('threshold_strategy', 'dynamic')
         

@@ -428,6 +428,9 @@ class Trainer:
             v_id_to_mask = getattr(self.val_loader.dataset, 'video_masks', None)
             v_id_to_int = getattr(self.val_loader.dataset, 'video_id_to_int', None)
             
+            # 使用列表解析构建 flat_video_ids 以便传递给 calculate_f1_scores
+            flat_video_ids = np.repeat(all_video_ids, T)
+            
             if v_id_to_mask is not None and v_id_to_int is not None:
                 print("[Post-Processing] Applying Active Label Masking to final predictions...")
                 # 批量查找视频索引
