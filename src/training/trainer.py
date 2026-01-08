@@ -58,12 +58,15 @@ class Trainer:
             while hasattr(ds, 'dataset'):
                 ds = ds.dataset
             
+            # Get global positive weight scaling factor
+            scale_factor = float(config['training'].get('pos_weight', 1.0))
+
             if hasattr(ds, 'class_weights'):
-                pos_weight = ds.class_weights.to(device)
-                print(f"Using class-aware weights for 'new_focal'. Weights mean: {pos_weight.mean().item():.4f}")
+                # Combine relative class weights (mean~1.0) with global scaling factor
+                pos_weight = ds.class_weights.to(device) * scale_factor
+                print(f"Using class-aware weights for 'new_focal' scaled by {scale_factor}. Weights mean: {pos_weight.mean().item():.4f}")
             else:
-                pos_weight_val = float(config['training'].get('pos_weight', 1.0))
-                pos_weight = torch.tensor(pos_weight_val, device=device)
+                pos_weight = torch.tensor(scale_factor, device=device)
                 print("Warning: 'new_focal' requested but class_weights not found. Using default.")
                 
             gamma = float(config['training'].get('focal_gamma', 2.0))
