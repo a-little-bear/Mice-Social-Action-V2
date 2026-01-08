@@ -48,7 +48,7 @@ data:
 model:
   spatial_encoder:
     enabled: true
-    type: "st_gcn" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
+    type: "spatialGNN" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
     use_adj: false # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128
@@ -65,8 +65,9 @@ model:
     transformer_heads: 16
     
   fusion:
-    type: "concat" # Options: "attention" (Weighted Sum), "concat" (Concatenation), "gated"
+    type: "concat" # Options: "attention" (Modulation), "concat" (Concatenation), "gated" (Learned Mix)
     hidden_dim: 1024
+    dropout: 0.1
     
   classifier:
     num_classes: 76
@@ -85,7 +86,7 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   scheduler: "cosine" # Options: "cosine", "step", "plateau"
-  loss_type: "focal" # Options: "focal" (fixed weight), "new_focal" (dataset-aware weights), "ce", "bce", "ohem", "macro_soft_f1"
+  loss_type: "new_focal" # Options: "focal" (fixed weight), "new_focal" (dataset-aware weights), "ce", "bce", "ohem", "macro_soft_f1"
   pos_weight: 12.0
   focal_gamma: 2.0
   focal_alpha: 0.25
@@ -94,7 +95,7 @@ training:
   mask_unlabeled: true
   save_dir: "/root/autodl-tmp/checkpoints/"
   torch_compile: true
-  ema_enabled: true
+  ema_enabled: false
   ema_decay: 0.999
 
 cross_validation:
@@ -103,7 +104,7 @@ cross_validation:
 
 post_processing:
   n_jobs: 8
-  threshold_strategy: "optimize" # Options: "dynamic" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
+  threshold_strategy: "optimize" # Options: "optimize" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
   optimize_thresholds: true
   tie_breaking: "kaggle" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:

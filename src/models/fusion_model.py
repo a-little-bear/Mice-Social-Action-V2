@@ -59,6 +59,7 @@ class HHSTFModel(nn.Module):
         temporal_dim = config['temporal_backbone']['hidden_dim']
         fusion_type = config['fusion'].get('type', 'concat')
         fusion_hidden_dim = config['fusion'].get('hidden_dim', 1024)
+        fusion_dropout = config['fusion'].get('dropout', 0.1)
         
         self.fusion_module = None
         final_dim = temporal_dim
@@ -70,10 +71,10 @@ class HHSTFModel(nn.Module):
             actual_context_dim = context_dim * 2 if use_subjects else context_dim
             
             if fusion_type == 'attention':
-                self.fusion_module = AttentionFusion(temporal_dim, actual_context_dim, fusion_hidden_dim)
+                self.fusion_module = AttentionFusion(temporal_dim, actual_context_dim, fusion_hidden_dim, dropout=fusion_dropout)
                 final_dim = temporal_dim # Attention now keeps temporal_dim via residual
             elif fusion_type == 'gated':
-                self.fusion_module = GatedFusion(temporal_dim, actual_context_dim, fusion_hidden_dim)
+                self.fusion_module = GatedFusion(temporal_dim, actual_context_dim, fusion_hidden_dim, dropout=fusion_dropout)
                 final_dim = fusion_hidden_dim
             else: # concat
                 final_dim += actual_context_dim
