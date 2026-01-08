@@ -137,16 +137,10 @@ class SpatialEncoder(nn.Module):
         B, T, F_total = x.shape
         
         # 1. Uniformly handle feature to node mapping
+        # 此时 F_total 应该是 self.input_dim (比如 215)
         if self.must_project:
-            # Handle case where F_total changed since init (e.g. different features enabled)
-            if F_total != self.input_dim:
-                # Re-initialize projector if needed (fallback)
-                self.input_projector = nn.Linear(F_total, self.num_nodes * self.hidden_dim).to(x.device)
-                self.input_dim = F_total
-            
             x_reshaped = self.input_projector(x.view(B*T, F_total))
             x_reshaped = x_reshaped.view(B*T, self.num_nodes, self.hidden_dim)
-            node_feat_dim = self.hidden_dim
         else:
             node_feat_dim = F_total // self.num_nodes
             x_reshaped = x.view(B*T, self.num_nodes, node_feat_dim)
@@ -156,7 +150,11 @@ class SpatialEncoder(nn.Module):
             curr_x = x_reshaped
             for layer in self.layers:
                 curr_x = self.activation(layer(curr_x, adj))
-            return curr_x.view(B, T, -1)
+            
+            # 统一输出：对节点进行均值池化，确保输出维度为 hidden_dim (128)
+            # 这样无论使用哪种 spatial encoder，TemporalEncoder 的输入都是一致的
+            x_out = curr_x.mean(dim=1) # (B*T, H)
+            return x_out.view(B, T, -1) # (B, T, H)
 
         elif self.type == 'st_gcn':
             if adj is None:
