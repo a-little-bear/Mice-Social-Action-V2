@@ -49,47 +49,47 @@ class MABeDataset(Dataset):
         else:
             df = pd.read_csv(csv_path)
             
-            # 使用配置中的 num_classes 以保持模型一致性，如果没有则根据 behaviors_labeled 确定
-            config_num_classes = config['model'].get('classifier', {}).get('num_classes', 0)
-            
-            # 扫描所有视频，获取行为并集以及每个视频的激活列表
-            all_classes_set = set()
-            video_active_map = {}
-            
-            print("Scanning CSV for video-specific active labels...")
-            for _, row in df.iterrows():
-                vid = str(row['video_id'])
+            if 'behaviors_labeled' in df.columns:
+                # 恢复最稳定的索引获取方式：使用第一行的列表顺序 (MABe 官方行为列表)
                 try:
-                    b_list = json.loads(row['behaviors_labeled'])
-                    all_classes_set.update(b_list)
-                    video_active_map[vid] = set(b_list)
-                except:
-                    continue
-            
-            # 这里的排序必须绝对稳定，否则模型权重对应关系会乱
-            self.classes = sorted(list(all_classes_set))
-            
-            # 如果配置指定了 76 类但扫描只发现 31 类，我们需要补齐或维持原状以防权重加载失效
-            if config_num_classes > len(self.classes):
-                print(f"Dataset found {len(self.classes)} classes, but config expects {config_num_classes}. Maintaining alignment.")
-                # 这里假设用户在外部已经定义了完整的 classes 列表，如果在此处重新定义会导致索引错位。
-                # 我们可以尝试从之前的 metadata 加载，或者根据 DataFrame 的 behaviors 字符串推断。
+                    behaviors_str = df.iloc[0]['behaviors_labeled']
+                    self.classes = json.loads(behaviors_str)
+                    print(f"Dataset classes loaded from row 0: {len(self.classes)} classes.")
+                except Exception as e:
+                    print(f"Error parsing behaviors_labeled: {e}")
+                    self.classes = []
                 
-            self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
-            self.num_classes = len(self.classes)
-            
-            # 建立视频ID到索引列表的映射 (关键：官方逻辑是基于视频的)
-            self.video_to_active_indices = {}
-            # 加快验证逻辑：预计算每个视频的类别掩码 Tensor
-            self.video_id_to_int = {vid: i for i, vid in enumerate(video_active_map.keys())}
-            self.video_masks = torch.zeros((len(video_active_map), self.num_classes), dtype=torch.float32)
-            
-            for vid, active_set in video_active_map.items():
-                indices = [self.class_to_idx[c] for c in active_set if c in self.class_to_idx]
-                self.video_to_active_indices[vid] = indices
-                if vid in self.video_id_to_int:
-                    v_idx = self.video_id_to_int[vid]
-                    self.video_masks[v_idx, indices] = 1.0 # 激活类别设为 1
+                self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
+                self.num_classes = len(self.classes)
+                
+                # 建立视频ID到激活索引的映射
+                video_active_map = {}
+                for _, row in df.iterrows():
+                    vid = str(row['video_id'])
+                    try:
+                        b_list = json.loads(row['behaviors_labeled'])
+                        video_active_map[vid] = set(b_list)
+                    except:
+                        continue
+                
+                self.video_to_active_indices = {}
+                self.video_id_to_int = {vid: i for i, vid in enumerate(video_active_map.keys())}
+                # 全局掩码矩阵
+                self.video_masks = torch.zeros((len(video_active_map), self.num_classes), dtype=torch.float32)
+                
+                for vid, active_set in video_active_map.items():
+                    indices = [self.class_to_idx[c] for c in active_set if c in self.class_to_idx]
+                    self.video_to_active_indices[vid] = indices
+                    if vid in self.video_id_to_int:
+                        v_idx = self.video_id_to_int[vid]
+                        self.video_masks[v_idx, indices] = 1.0
+            else:
+                self.classes = []
+                self.class_to_idx = {}
+                self.num_classes = 0
+                self.video_to_active_indices = {}
+                self.video_id_to_int = {}
+                self.video_masks = torch.zeros((0, 0))
             
             print(f"Initialized dataset with {self.num_classes} global classes and {len(self.video_masks)} precomputed masks.")
             
@@ -263,9 +263,8 @@ class MABeDataset(Dataset):
             # Handling both simple 'action' and composite 'mouseN,mouseM,action'
             mapping_active = False
             if 'agent_id' in df.columns and 'target_id' in df.columns:
-                subjects = "mouse" + (df['agent_id'] + 1).astype(str)
-                objs = np.where(df['agent_id'] == df['target_id'], "self", "mouse" + (df['target_id'] + 1).astype(str))
-                composite_actions = subjects + "," + objs + "," + df['action']
+                # MABe 2022 format: "agent_id,target_id,action" (e.g., "0,1,attack")
+                composite_actions = df['agent_id'].astype(str) + "," + df['target_id'].astype(str) + "," + df['action']
                 mapping_active = True
             
             # Extract basic columns once

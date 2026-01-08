@@ -219,11 +219,11 @@ class Trainer:
             self.ema.apply_to(self.model)
             print("Using EMA weights for validation")
 
-        lab_stats = defaultdict(lambda: None)
-        
+        # 核心初始化：确保所有列表在任何 eval 模式下都已定义
         all_probs = []
         all_targets = []
         all_lab_ids = []
+        all_video_ids = [] 
         
         eval_interval = self.config['training'].get('eval_interval', 10)
         is_full_eval_epoch = force_full or (epoch + 1) % eval_interval == 0 or (epoch + 1) == self.config['training']['epochs']
@@ -233,6 +233,16 @@ class Trainer:
             self.config['post_processing'].get('tie_breaking', 'none') != 'none'
         )
         
+        # 性能极速优化：在 GPU 上完成所有指标累加，彻底消除 CPU 瓶颈
+        ds = self.val_loader.dataset
+        unique_labs = sorted(list(set(d['lab_id'] for d in ds.data)))
+        lab_to_idx = {lab: i for i, lab in enumerate(unique_labs)}
+        num_labs = len(unique_labs)
+        num_classes = ds.num_classes
+        
+        # [num_labs, num_classes, 3] -> 0:TP, 1:FP, 2:FN
+        gpu_stats = torch.zeros((num_labs, num_classes, 3), device=self.device, dtype=torch.float64)
+
         with torch.no_grad():
             if collect_all and self.config['post_processing'].get('smoothing', {}).get('method', 'none') != 'none':
                 print(f"Note: Applying temporal smoothing per batch during validation to save memory.")
@@ -242,26 +252,28 @@ class Trainer:
                 keypoints, labels, lab_ids, subject_ids, video_ids = batch
                 
                 keypoints = keypoints.to(self.device)
+                labels = labels.to(self.device).float() # 统一到 float 用于计算
                 
-                if not isinstance(lab_ids, torch.Tensor):
-                    model_to_check = self.model
-                    if hasattr(model_to_check, '_orig_mod'):
-                        model_to_check = model_to_check._orig_mod
-                    
-                    if hasattr(model_to_check, 'context_adapter') and model_to_check.context_adapter is not None:
-                        lab_map = model_to_check.context_adapter.lab_map
-                        lab_indices = [lab_map.get(l, 21) for l in lab_ids]
-                        lab_ids_dev = torch.tensor(lab_indices, device=self.device)
-                    else:
-                        lab_ids_dev = lab_ids
-                else:
-                    lab_ids_dev = lab_ids.to(self.device)
-                    
+                # 获取 Lab 索引 (GPU Tensor)
+                lab_indices = [lab_to_idx.get(l, 0) for l in lab_ids]
+                batch_lab_indices = torch.tensor(lab_indices, device=self.device)
+                
                 if not isinstance(subject_ids, torch.Tensor):
                     subject_ids_dev = torch.tensor(subject_ids, device=self.device)
                 else:
                     subject_ids_dev = subject_ids.to(self.device)
                 
+                # 重新计算 lab_ids 到模型需要的索引（如果适用）
+                model_to_check = self.model
+                if hasattr(model_to_check, '_orig_mod'): model_to_check = model_to_check._orig_mod
+                
+                if hasattr(model_to_check, 'context_adapter') and model_to_check.context_adapter is not None:
+                    m_lab_map = model_to_check.context_adapter.lab_map
+                    m_lab_indices = [m_lab_map.get(l, 21) for l in lab_ids]
+                    lab_ids_dev = torch.tensor(m_lab_indices, device=self.device)
+                else:
+                    lab_ids_dev = batch_lab_indices 
+
                 outputs = self.model(keypoints, lab_ids_dev, subject_ids_dev)
                 if isinstance(outputs, tuple):
                     logits, _ = outputs
@@ -272,71 +284,59 @@ class Trainer:
                 
                 if collect_all:
                     all_probs.append(probs.half().cpu())
-                    all_targets.append(labels.cpu().byte())
-                    
-                    if isinstance(lab_ids, torch.Tensor):
-                        all_lab_ids.append(lab_ids.cpu())
-                    else:
-                        all_lab_ids.extend(lab_ids)
-                    
+                    all_targets.append(labels.byte().cpu())
+                    all_lab_ids.extend(lab_ids)
                     all_video_ids.extend(video_ids)
                 else:
                     preds_bin = (probs > 0.5).float()
                     
-                    # 【性能优化】：使用矢量化掩码代替 Python 循环
-                    ds = self.val_loader.dataset
+                    # 矢量化对齐官方 Active Masking
                     video_masks = getattr(ds, 'video_masks', None)
                     v_id_to_int = getattr(ds, 'video_id_to_int', None)
                     
                     if video_masks is not None and v_id_to_int is not None:
-                        # 批量获取视频索引
-                        try:
-                            v_indices = [v_id_to_int.get(str(vid), -1) for vid in video_ids]
-                            # 创建形状为 [B, 1, C] 的掩码并广播
-                            # 注意：preds_bin 形状是 [B, T, C]
+                        v_indices = [v_id_to_int.get(str(vid), -1) for vid in video_ids]
+                        # 仅在所有视频都包含在掩码中时运行
+                        if -1 not in v_indices:
                             batch_masks = video_masks[v_indices].to(self.device).unsqueeze(1)
                             preds_bin = preds_bin * batch_masks 
-                        except Exception as e:
-                            # 降级逻辑以防索引错误
-                            pass
 
-                    preds_np = preds_bin.cpu().numpy()
-                    targets_np = labels.cpu().numpy()
+                    # GPU 上的 TP/FP/FN 批量计算
+                    # [B, T, C] -> 对 T 维度求和 -> [B, C]
+                    tp_b = (preds_bin * labels).sum(dim=1).double()
+                    fp_b = (preds_bin * (1 - labels)).sum(dim=1).double()
+                    fn_b = ((1 - preds_bin) * labels).sum(dim=1).double()
                     
-                    if isinstance(lab_ids, torch.Tensor):
-                        lab_ids_np = lab_ids.cpu().numpy()
-                    else:
-                        lab_ids_np = np.array(lab_ids)
+                    # 使用 scatter_add 将 Batch 里的结果按 Lab 归位
+                    # indices_expanded: [B, C]
+                    indices_expanded = batch_lab_indices.view(-1, 1).expand(-1, num_classes)
+                    gpu_stats[:, :, 0].scatter_add_(0, indices_expanded, tp_b)
+                    gpu_stats[:, :, 1].scatter_add_(0, indices_expanded, fp_b)
+                    gpu_stats[:, :, 2].scatter_add_(0, indices_expanded, fn_b)
 
-                    B, T, C = preds_np.shape
-                    
-                    unique_labs = np.unique(lab_ids_np)
-                    for lab in unique_labs:
-                        batch_mask = (lab_ids_np == lab)
-                        
-                        p_lab = preds_np[batch_mask]
-                        t_lab = targets_np[batch_mask]
-                        
-                        valid_mask = ~np.isnan(t_lab).any(axis=-1)
-                        
-                        if not np.any(valid_mask):
-                            continue
-                            
-                        p_flat = p_lab[valid_mask]
-                        t_flat = t_lab[valid_mask]
-                        
-                        tp = (p_flat * t_flat).sum(axis=0)
-                        
-                        fp = (p_flat * (1 - t_flat)).sum(axis=0)
-                        
-                        fn = ((1 - p_flat) * t_flat).sum(axis=0)
-                        
-                        if lab_stats[lab] is None:
-                            lab_stats[lab] = np.zeros((C, 3), dtype=np.int64)
-                        
-                        lab_stats[lab][:, 0] += tp.astype(np.int64)
-                        lab_stats[lab][:, 1] += fp.astype(np.int64)
-                        lab_stats[lab][:, 2] += fn.astype(np.int64)
+        if not collect_all:
+            # 汇总结果
+            cpu_stats = gpu_stats.cpu().numpy()
+            lab_scores = []
+            for i, lab in enumerate(unique_labs):
+                tp, fp, fn = cpu_stats[i, :, 0], cpu_stats[i, :, 1], cpu_stats[i, :, 2]
+                denom = 2 * tp + fp + fn
+                f1s = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom != 0)
+                
+                # 只对在该 Lab 中出现过的类别求平均（对齐官方 Macro F1 逻辑）
+                present = (tp + fn) > 0
+                if present.any():
+                    lab_scores.append(np.mean(f1s[present]))
+                else:
+                    lab_scores.append(0.0)
+            
+            final_f1 = np.mean(lab_scores) if lab_scores else 0.0
+            
+            # 恢复 EMA（如果适用）
+            if original_state_dict:
+                self.model.load_state_dict(original_state_dict)
+                
+            return final_f1, None, None
 
         if collect_all:
             print("\n[Post-Processing] Concatenating predictions (Memory-efficient)...")

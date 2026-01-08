@@ -104,7 +104,7 @@ cross_validation:
 
 post_processing:
   n_jobs: 8
-  threshold_strategy: "optimize" # Options: "optimize" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
+  threshold_strategy: "kaggle" # Options: "optimize" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
   optimize_thresholds: true
   tie_breaking: "kaggle" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:
