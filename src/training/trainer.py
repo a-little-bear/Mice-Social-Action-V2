@@ -321,19 +321,36 @@ class Trainer:
             # 汇总结果
             cpu_stats = gpu_stats.cpu().numpy()
             lab_scores = []
+            lab_precisions = []
+            lab_recalls = []
+            
             for i, lab in enumerate(unique_labs):
                 tp, fp, fn = cpu_stats[i, :, 0], cpu_stats[i, :, 1], cpu_stats[i, :, 2]
                 denom = 2 * tp + fp + fn
                 f1s = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom != 0)
                 
+                # Precision and Recall calculation
+                denom_p = tp + fp
+                denom_r = tp + fn
+                precisions = np.divide(tp, denom_p, out=np.zeros_like(denom_p, dtype=float), where=denom_p != 0)
+                recalls = np.divide(tp, denom_r, out=np.zeros_like(denom_r, dtype=float), where=denom_r != 0)
+
                 # 只对在该 Lab 中出现过的类别求平均（对齐官方 Macro F1 逻辑）
                 present = (tp + fn) > 0
                 if present.any():
                     lab_scores.append(np.mean(f1s[present]))
+                    lab_precisions.append(np.mean(precisions[present]))
+                    lab_recalls.append(np.mean(recalls[present]))
                 else:
                     lab_scores.append(0.0)
+                    lab_precisions.append(0.0)
+                    lab_recalls.append(0.0)
             
             final_f1 = np.mean(lab_scores) if lab_scores else 0.0
+            final_precision = np.mean(lab_precisions) if lab_precisions else 0.0
+            final_recall = np.mean(lab_recalls) if lab_recalls else 0.0
+            
+            print(f"Val Metrics - F1: {final_f1:.4f} | Precision: {final_precision:.4f} | Recall: {final_recall:.4f}")
             
             # 恢复 EMA（如果适用）
             if original_state_dict:
