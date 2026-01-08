@@ -14,24 +14,37 @@ class HHSTFModel(nn.Module):
         self.feature_generator = feature_generator
         
         self.spatial_encoder = None
-        
-        # We need adj buffer even before spatial_encoder if we want to register it properly
-        self.register_buffer('adj', None) 
+        # Use a dummy tensor for adj by default
+        self.register_buffer('adj', torch.zeros(1)) 
         
         if config['spatial_encoder']['enabled']:
-            # Use SpatialEncoder with full config
-            self.spatial_encoder = SpatialEncoder(config['spatial_encoder'])
+            spatial_config = config['spatial_encoder'].copy()
+            
+            # Dynamically determine input_dim if not specified
+            if spatial_config.get('input_dim', 0) == 0 and self.feature_generator:
+                # Most social tasks in this dataset have 2 mice
+                num_mice = 2
+                num_nodes_per_mouse = spatial_config.get('num_nodes', 7)
+                spatial_config['input_dim'] = self.feature_generator.get_feature_dim(num_mice, num_nodes_per_mouse)
+            
+            # Use SpatialEncoder with updated config
+            self.spatial_encoder = SpatialEncoder(spatial_config)
             
             # Load adjacency matrix if enabled
-            if config['spatial_encoder'].get('use_adj', False):
-                num_nodes = config['spatial_encoder'].get('num_nodes', None)
+            if spatial_config.get('use_adj', False):
+                num_nodes = spatial_config.get('num_nodes', None)
                 adj = self._get_adjacency_matrix(num_nodes)
                 if adj is not None:
-                    self.register_buffer('adj', adj) # Register as buffer to move with model
+                    self.adj = adj # Directly assign to registered buffer
             
         temporal_config = config['temporal_backbone'].copy()
         if self.spatial_encoder:
             temporal_config['input_dim'] = config['spatial_encoder']['hidden_dim']
+        elif self.feature_generator:
+            # If no spatial encoder, temporal encoder takes raw feature dim
+            num_mice = 2
+            num_nodes_per_mouse = spatial_config.get('num_nodes', 7)
+            temporal_config['input_dim'] = self.feature_generator.get_feature_dim(num_mice, num_nodes_per_mouse)
 
         self.temporal_encoder = TemporalEncoder(
             config=temporal_config
@@ -78,10 +91,9 @@ class HHSTFModel(nn.Module):
             x = self.feature_generator(x)
             
         if self.spatial_encoder:
-            # spatial_encoder now handles reshaping internally if necessary
-            # We just pass x and adj
-            # adj is automatically on the correct device if registered as buffer
-            x = self.spatial_encoder(x, adj=self.adj)
+            # Check if adj is the dummy tensor
+            current_adj = self.adj if self.adj.numel() > 1 else None
+            x = self.spatial_encoder(x, adj=current_adj)
             
         features = self.temporal_encoder(x)
         

@@ -92,25 +92,33 @@ class SpatialEncoder(nn.Module):
         self.num_layers = config.get('num_layers', 2)
         self.dropout = config.get('dropout', 0.1)
         self.num_nodes = config.get('num_nodes', 1) 
-        # Note: num_nodes must be set correctly in config for st_gcn/gat
         
+        # New: Robust feature to node mapping
+        self.must_project = (self.input_dim % self.num_nodes != 0) or (self.type in ['st_gcn', 'gat'])
+        
+        if self.must_project:
+            self.input_projector = nn.Linear(self.input_dim, self.num_nodes * self.hidden_dim)
+            self.node_feat_dim = self.hidden_dim
+        else:
+            self.node_feat_dim = self.input_dim // self.num_nodes
+
         if self.type == 'spatialGNN':
             self.layers = nn.ModuleList()
-            self.layers.append(GraphConvolution(self.input_dim, self.hidden_dim))
+            # If we projected, in_features is node_feat_dim
+            in_dim = self.node_feat_dim if self.must_project else self.input_dim
+            self.layers.append(GraphConvolution(in_dim, self.hidden_dim))
             for _ in range(self.num_layers - 1):
                 self.layers.append(GraphConvolution(self.hidden_dim, self.hidden_dim))
             self.activation = nn.ReLU()
             
         elif self.type == 'st_gcn':
-            self.node_dim = self.input_dim // self.num_nodes
-            self.gcn = nn.Linear(self.node_dim, self.hidden_dim) 
+            self.gcn_layer = nn.Linear(self.node_feat_dim, self.hidden_dim) 
             self.tcn = nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=9, padding=4)
             self.dropout_layer = nn.Dropout(self.dropout)
             
         elif self.type == 'gat':
-            self.node_dim = self.input_dim // self.num_nodes
-            self.gat_layer = GraphAttentionLayer(
-                self.node_dim, 
+            self.gat_instance = GraphAttentionLayer(
+                self.node_feat_dim, 
                 self.hidden_dim, 
                 dropout=self.dropout, 
                 alpha=0.2, 
@@ -128,76 +136,39 @@ class SpatialEncoder(nn.Module):
         """
         B, T, F_total = x.shape
         
-        if self.type == 'spatialGNN':
-            # spatialGNN treats the whole frame features as one or passes adj if dimensions match
-            # To handle ablation "use_adj=True" vs "False" for spatialGNN,
-            # we need to decide what 'spatialGNN' means with adj.
-            # Original code was MLP style. 
-            # If use_adj is True, we probably want GCN behavior on nodes.
-            # But graph convolution usually requires (Nodes, Features).
-            # If x is flattened, we assume it's just MLP if adj is None.
-            # If adj is present, we must reshape.
+        # 1. Uniformly handle feature to node mapping
+        if self.must_project:
+            # Handle case where F_total changed since init (e.g. different features enabled)
+            if F_total != self.input_dim:
+                # Re-initialize projector if needed (fallback)
+                self.input_projector = nn.Linear(F_total, self.num_nodes * self.hidden_dim).to(x.device)
+                self.input_dim = F_total
             
-            if adj is not None:
-                # Assuming spatialGNN with adj means GCN on nodes
-                # Reshape to (B*T, N, C)
-                if self.num_nodes > 1 and F_total % self.num_nodes == 0:
-                    node_dim = F_total // self.num_nodes
-                    x_reshaped = x.view(B*T, self.num_nodes, node_dim)
-                    
-                    # Apply GCN per layer
-                    # Note: Our GraphConvolution above is generic linear.
-                    # We need explicit GCN logic: D^-0.5 A D^-0.5 X W
-                    # The GraphConvolution class in original spatial.py was basically Linear(x) + matmul(adj, support).
-                    # This works for (B, N, F) input and (N, N) adj.
-                    
-                    curr_x = x_reshaped
-                    for layer in self.layers:
-                        # layer(curr_x, adj) will do matmul(adj, linear(curr_x))
-                        curr_x = self.activation(layer(curr_x, adj))
-                    
-                    # Flatten back
-                    return curr_x.view(B, T, -1)
-                else:
-                    # Fallback to MLP if dimensions don't make sense for graph
-                    x_flat = x.view(B*T, F_total)
-                    for layer in self.layers:
-                        x_flat = self.activation(layer(x_flat, None))
-                    return x_flat.view(B, T, -1)
-            else:
-                # MLP behavior (original spatialGNN)
-                x_flat = x.view(B*T, F_total)
-                for layer in self.layers:
-                    x_flat = self.activation(layer(x_flat, None))
-                return x_flat.view(B, T, -1)
+            x_reshaped = self.input_projector(x.view(B*T, F_total))
+            x_reshaped = x_reshaped.view(B*T, self.num_nodes, self.hidden_dim)
+            node_feat_dim = self.hidden_dim
+        else:
+            node_feat_dim = F_total // self.num_nodes
+            x_reshaped = x.view(B*T, self.num_nodes, node_feat_dim)
+
+        # 2. Process with specific graph architecture
+        if self.type == 'spatialGNN':
+            curr_x = x_reshaped
+            for layer in self.layers:
+                curr_x = self.activation(layer(curr_x, adj))
+            return curr_x.view(B, T, -1)
 
         elif self.type == 'st_gcn':
-            N = self.num_nodes
-            if F_total % N != 0:
-                 raise ValueError(f"Input features {F_total} not divisible by num_nodes {N}")
-            C = F_total // N
-            
-            x_reshaped = x.view(B*T, N, C)
-            
             if adj is None:
-                # Fallback adj if not provided but st_gcn needs graph structure?
-                # Or just identity
-                adj = torch.eye(N).to(x.device).unsqueeze(0).expand(B*T, -1, -1)
+                adj = torch.eye(self.num_nodes).to(x.device).unsqueeze(0).expand(B*T, -1, -1)
             elif adj.dim() == 2:
                 adj = adj.unsqueeze(0).expand(B*T, -1, -1)
             
-            support = self.gcn(x_reshaped) 
+            support = self.gcn_layer(x_reshaped) 
             x_out = torch.bmm(adj, support) 
             x_out = F.relu(x_out)
             
-            # (B*T, N, H) -> (B, T, N, H)
-            x_out = x_out.view(B, T, N, -1)
-            
-            # ST-GCN usually aggregates over nodes for temporal modeling?
-            # TopologyEncoder implementation was: mean(dim=2) -> (B, -1, T) -> TCN
-            
-            # Permute for proper TCN input (B, Channels, Time)
-            # Pooling nodes:
+            x_out = x_out.view(B, T, self.num_nodes, -1)
             x_out = x_out.mean(dim=2) # (B, T, H)
             x_out = x_out.permute(0, 2, 1) # (B, H, T)
             
@@ -207,23 +178,14 @@ class SpatialEncoder(nn.Module):
             return x_out.transpose(1, 2) # (B, T, H)
 
         elif self.type == 'gat':
-            N = self.num_nodes
-            if F_total % N != 0:
-                 raise ValueError(f"Input features {F_total} not divisible by num_nodes {N}")
-            C = F_total // N
-            
-            x_reshaped = x.view(B*T, N, C)
-            
             if adj is None:
-                adj = torch.ones(B*T, N, N).to(x.device) # Full attention if no adj
+                adj = torch.ones(B*T, self.num_nodes, self.num_nodes).to(x.device)
             elif adj.dim() == 2:
                 adj = adj.unsqueeze(0).expand(B*T, -1, -1)
                 
-            x_out = self.gat_layer(x_reshaped, adj) 
+            x_out = self.gat_instance(x_reshaped, adj) 
             x_out = self.dropout_layer(x_out)
-            
-            # Pooling
-            x_out = x_out.mean(dim=1) # (B*T, H)
+            x_out = x_out.mean(dim=1) 
             
             return x_out.view(B, T, -1)
 
