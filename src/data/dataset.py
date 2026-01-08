@@ -228,32 +228,37 @@ class MABeDataset(Dataset):
             
         try:
             df = pd.read_parquet(annotation_path)
-            for _, row in df.iterrows():
-                try:
-                    agent_id = int(row['agent_id'])
-                    target_id = int(row['target_id'])
-                    action = row['action']
-                    
-                    subject = f"mouse{agent_id + 1}"
-                    obj = "self" if agent_id == target_id else f"mouse{target_id + 1}"
-                    composite_action = f"{subject},{obj},{action}"
-                except (ValueError, KeyError):
-                    composite_action = row['action'] if 'action' in row else None
-
-                target_class = None
-                if composite_action in self.class_to_idx:
-                    target_class = composite_action
-                elif 'action' in row and row['action'] in self.class_to_idx:
-                    target_class = row['action']
+            if df.empty:
+                return labels
                 
-                if target_class:
-                    idx = self.class_to_idx[target_class]
-                    s = max(0, int(row['start_frame']))
-                    e = min(total_frames, int(row['stop_frame']))
-                    if s < e:
-                        labels[s:e, idx] = 1
+            # Vectorized logic for mapping actions toIndices
+            # Handling both simple 'action' and composite 'mouseN,mouseM,action'
+            mapping_active = False
+            if 'agent_id' in df.columns and 'target_id' in df.columns:
+                subjects = "mouse" + (df['agent_id'] + 1).astype(str)
+                objs = np.where(df['agent_id'] == df['target_id'], "self", "mouse" + (df['target_id'] + 1).astype(str))
+                composite_actions = subjects + "," + objs + "," + df['action']
+                mapping_active = True
             
-            # Use compact representation
+            # Extract basic columns once
+            starts = df['start_frame'].values.astype(int)
+            stops = df['stop_frame'].values.astype(int)
+            actions = df['action'].values
+            
+            for i in range(len(df)):
+                target_idx = None
+                if mapping_active:
+                    target_idx = self.class_to_idx.get(composite_actions.iloc[i])
+                
+                if target_idx is None:
+                    target_idx = self.class_to_idx.get(actions[i])
+                
+                if target_idx is not None:
+                    s = max(0, starts[i])
+                    e = min(total_frames, stops[i])
+                    if s < e:
+                        labels[s:e, target_idx] = 1
+            
             MABeDataset._label_full_cache[annotation_path] = labels
             return labels
         except Exception as e:
@@ -342,10 +347,9 @@ class MABeDataset(Dataset):
             keypoints[f_idx, m_idx, p_idx, 0] = df['x'].values
             keypoints[f_idx, m_idx, p_idx, 1] = df['y'].values
             
-            # Memory Cleanup: Free the large dataframe as soon as data is copied
+            # Memory Optimization: Avoid manual gc.collect() in short-lived threads
+            # as it can block other threads and severely slow down preloading.
             del df
-            import gc
-            gc.collect()
             
             if self.config['data']['preprocessing'].get('interpolate_nans', True):
                 mask = np.isnan(keypoints)
