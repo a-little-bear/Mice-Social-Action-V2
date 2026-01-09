@@ -435,7 +435,9 @@ class Trainer:
             
             # Prepare Video IDs for optimization to align metric with validation
             full_video_ids = np.repeat(all_video_ids, T)
-            flat_video_ids_opt = full_video_ids[valid_mask] if self.config['loss_type'] != 'new_focal' else full_video_ids
+            # Correctly access nested config for loss_type
+            loss_type = self.config['training'].get('loss_type', 'focal')
+            flat_video_ids_opt = full_video_ids[valid_mask] if loss_type != 'new_focal' else full_video_ids
             # Apply same stride as other tensors
             flat_video_ids_opt = flat_video_ids_opt[::optimize_stride]
             
