@@ -48,7 +48,7 @@ data:
 model: 
   spatial_encoder:
     enabled: true
-    type: "gat" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
+    type: "st_gcn" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
     use_adj: true # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128
@@ -106,7 +106,7 @@ post_processing:
   n_jobs: 8
   threshold_strategy: "optimize" # Options: "optimize" (Grid Search), "kaggle" (Hardcoded per-lab), "fixed" (0.5)
   optimize_thresholds: true
-  tie_breaking: "kaggle" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
+  tie_breaking: "z_score" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:
     method: "ema" # Options: "median_filter", "ema", "none"
     window_size: 7
