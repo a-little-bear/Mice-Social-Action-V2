@@ -260,8 +260,24 @@ class PostProcessor:
 
     def apply_tie_breaking(self, predictions, lab_ids):
         method = self.config.get('tie_breaking', 'none')
+        
+        # Even if method is 'none', we must return binary predictions based on thresholds
+        # The caller expects binary output, not probabilities.
         if method == 'none':
-            return predictions
+            final_preds = np.zeros(predictions.shape, dtype=np.uint8)
+            unique_labs = np.unique(lab_ids)
+            for lab in unique_labs:
+                mask = (lab_ids == lab)
+                lab_probs = predictions[mask]
+                
+                if lab in self.thresholds:
+                    # thresholds shape: (num_classes,)
+                    thresh = self.thresholds[lab]
+                else:
+                    thresh = 0.5
+                    
+                final_preds[mask] = (lab_probs > thresh).astype(np.uint8)
+            return final_preds
             
         print(f"Applying tie-breaking (method: {method}) using {self.n_jobs} jobs...")
         final_preds = np.zeros(predictions.shape, dtype=np.uint8)

@@ -48,7 +48,7 @@ data:
 model: 
   spatial_encoder:
     enabled: true
-    type: "spatialGNN" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
+    type: "st_gcn" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
     use_adj: true # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128
@@ -65,7 +65,7 @@ model:
     transformer_heads: 16
     
   fusion:
-    type: "attention" # Options: "attention" (Modulation), "concat" (Concatenation), "gated" (Learned Mix)
+    type: "concat" # Options: "attention" (Modulation), "concat" (Concatenation), "gated" (Learned Mix)
     hidden_dim: 1024
     dropout: 0.1
     
@@ -110,7 +110,7 @@ post_processing:
     start: 0.001
     end: 0.95
     step: 0.005
-  tie_breaking: "none" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
+  tie_breaking: "z_score" # Options: "none", "z_score", "argmax", "kaggle" (Rule-based)
   smoothing:
     method: "median_filter" # Options: "median_filter", "ema", "none"
     window_size: 5
