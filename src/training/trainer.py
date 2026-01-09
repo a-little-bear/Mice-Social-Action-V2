@@ -442,21 +442,89 @@ class Trainer:
             del flat_probs_opt, flat_targets_opt, flat_lab_ids_opt
             gc.collect()
 
-            final_bin_preds = self.post_processor.apply_tie_breaking(flat_probs_view, flat_lab_ids)
-            
-            # 计算最终指标时应用 Active Label Masking
+            # --- Intermediate F1 Calculation ---
+            print("\n[Intermediate] Calculating F1 after Thresholding (No Tie-Breaking)...")
+            # Apply raw thresholds
+            raw_bin_preds = np.zeros_like(flat_probs_view, dtype=np.uint8)
+            unique_labs = np.unique(flat_lab_ids)
+            for lab in unique_labs:
+                lab_mask = (flat_lab_ids == lab)
+                lab_probs = flat_probs_view[lab_mask]
+                thresholds = self.post_processor.thresholds.get(lab, np.full(lab_probs.shape[1], 0.5))
+                raw_bin_preds[lab_mask] = (lab_probs > thresholds).astype(np.uint8)
+
+            # Re-apply active masking for raw preds to be fair
+            # Note: We need to set up flat_v_indices first
             v_id_to_mask = getattr(self.val_loader.dataset, 'video_masks', None)
             v_id_to_int = getattr(self.val_loader.dataset, 'video_id_to_int', None)
-            
-            # 使用列表解析构建 flat_video_ids 以便传递给 calculate_f1_scores
             flat_video_ids = np.repeat(all_video_ids, T)
             
+            raw_val_f1 = 0.0
+            raw_val_p = 0.0
+            raw_val_r = 0.0
+            
+            if v_id_to_mask is not None and v_id_to_int is not None:
+                v_indices = [v_id_to_int.get(str(vid), -1) for vid in all_video_ids]
+                flat_v_indices = np.repeat(v_indices, T)
+                # Ensure cpu
+                masks = v_id_to_mask.cpu().numpy()
+                flat_masks = masks[flat_v_indices] == 1
+                
+                # Apply mask to raw
+                raw_bin_preds_masked = raw_bin_preds & flat_masks
+                
+                # Simple metric calc (macro averaged over labs)
+                raw_lab_scores = []
+                for lab in unique_labs:
+                    lm = (flat_lab_ids == lab)
+                    p_lab = raw_bin_preds_masked[lm]
+                    t_lab = flat_targets_view[lm]
+                    
+                    tp = (p_lab & t_lab).sum(axis=0)
+                    fp = (p_lab & ~t_lab).sum(axis=0) # ~t_lab assumes 0/1
+                    fn = (~p_lab & t_lab).sum(axis=0) # ~p_lab assumes 0/1
+                    
+                    denom = 2*tp + fp + fn
+                    f1s = np.divide(2*tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+                    present = (tp + fn) > 0
+                    if present.any(): raw_lab_scores.append(np.mean(f1s[present]))
+                    else: raw_lab_scores.append(0.0)
+                raw_val_f1 = np.mean(raw_lab_scores)
+                print(f"Intermediate F1 (Thresholds Only): {raw_val_f1:.4f}")
+                del raw_bin_preds_masked
+            
+            del raw_bin_preds
+
+            final_bin_preds = self.post_processor.apply_tie_breaking(flat_probs_view, flat_lab_ids)
+            
+            # --- F1 after Tie-Breaking (before final gap filling if any) ---
+            print("[Intermediate] Calculating F1 after Tie-Breaking...")
+            if v_id_to_mask is not None and v_id_to_int is not None:
+                # Apply mask to tie-broken preds
+                # flat_masks is already computed above
+                tb_preds_masked = final_bin_preds & flat_masks
+                
+                tb_lab_scores = []
+                for lab in unique_labs:
+                    lm = (flat_lab_ids == lab)
+                    p_lab = tb_preds_masked[lm]
+                    t_lab = flat_targets_view[lm]
+                    
+                    tp = (p_lab & t_lab).sum(axis=0)
+                    fp = (p_lab & ~t_lab).sum(axis=0)
+                    fn = (~p_lab & t_lab).sum(axis=0)
+                    
+                    denom = 2*tp + fp + fn
+                    f1s = np.divide(2*tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+                    present = (tp + fn) > 0
+                    if present.any(): tb_lab_scores.append(np.mean(f1s[present]))
+                    else: tb_lab_scores.append(0.0)
+                tb_val_f1 = np.mean(tb_lab_scores)
+                print(f"Intermediate F1 (After Tie-Breaking): {tb_val_f1:.4f}")
+                del tb_preds_masked
+
             if v_id_to_mask is not None and v_id_to_int is not None:
                 print("[Post-Processing] Applying Active Label Masking to final predictions...")
-                # 批量查找视频索引
-                v_indices = [v_id_to_int.get(str(vid), -1) for vid in all_video_ids]
-                # 重复 T 次
-                flat_v_indices = np.repeat(v_indices, T)
                 # 获取掩码 (CPU)
                 masks_cpu = v_id_to_mask.numpy()
                 final_masks = masks_cpu[flat_v_indices]
