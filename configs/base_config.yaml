@@ -49,7 +49,7 @@ model:
   spatial_encoder:
     enabled: true
     type: "st_gcn" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
-    use_adj: true # Whether to use adjacency matrix constraints
+    use_adj: false # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128
     num_layers: 4
@@ -65,7 +65,7 @@ model:
     transformer_heads: 16
     
   fusion:
-    type: "attention" # Options: "attention" (Modulation), "concat" (Concatenation), "gated" (Learned Mix)
+    type: "concat" # Options: "attention" (Modulation), "concat" (Concatenation), "gated" (Learned Mix)
     hidden_dim: 1024
     dropout: 0.1
     
