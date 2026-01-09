@@ -4,37 +4,52 @@ import torch.nn.functional as F
 
 class AttentionFusion(nn.Module):
     """
-    Refined Context-Aware Channel Attention (Squeeze-and-Excitation style).
-    Uses the context to modulate the importance of different feature channels.
+    Improved FiLM-style (Feature-wise Linear Modulation) Fusion.
+    Instead of just scaling (SE-style), this learns both Scale (Gamma) and Shift (Beta).
+    This prevents gradient starvation when Scale is near 0 and allows better domain adaptation.
     """
     def __init__(self, temporal_dim, context_dim, hidden_dim, dropout=0.1):
         super().__init__()
-        self.context_to_weight = nn.Sequential(
+        # We project context to 2 * temporal_dim to get both Gamma and Beta
+        self.context_net = nn.Sequential(
             nn.Linear(context_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LeakyReLU(0.1, inplace=True), # LeakyReLU better than ReLU for gradient flow
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, temporal_dim),
-            nn.Sigmoid()
+            nn.Linear(hidden_dim, 2 * temporal_dim)
         )
         self.proj = nn.Linear(temporal_dim, temporal_dim)
         self.norm = nn.LayerNorm(temporal_dim)
         self.dropout = nn.Dropout(dropout)
+        
+        # Initialize Gamma to 0 (which means scale=1 after calc) and Beta to 0
+        # This ensures training starts as if Fusion is Identity, preventing shock.
+        nn.init.zeros_(self.context_net[-1].weight)
+        nn.init.zeros_(self.context_net[-1].bias)
 
     def forward(self, temporal_features, context_features):
         # temporal_features: (B, T, D_t)
         # context_features: (B, D_c)
         
-        # (B, D_t)
-        weights = self.context_to_weight(context_features)
+        # (B, 2*D_t)
+        params = self.context_net(context_features)
         
-        # Channel-wise modulation
-        # (B, T, D_t) * (B, 1, D_t)
-        modulated = temporal_features * weights.unsqueeze(1)
+        # Split into Gamma (Scale) and Beta (Shift)
+        gamma, beta = torch.chunk(params, 2, dim=1)
         
+        # Gamma: range (-1, 1) + 1.0 -> (0, 2). Centered at 1.0.
+        # This prevents the "multiplying by near-zero" problem of Sigmoid.
+        scale_factor = 1.0 + torch.tanh(gamma)
+        shift_factor = beta
+        
+        # FiLM: Scale * Feat + Shift
+        # (B, 1, D) * (B, T, D) + (B, 1, D)
+        modulated = (scale_factor.unsqueeze(1) * temporal_features) + shift_factor.unsqueeze(1)
+        
+        # Additional projection to mix channels
         out = self.proj(modulated)
         out = self.dropout(out)
         
-        # Residual connection ensures the model can at least maintain backbone features
+        # Residual connection
         return self.norm(out + temporal_features)
 
 class GatedFusion(nn.Module):
