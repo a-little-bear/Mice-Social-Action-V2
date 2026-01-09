@@ -433,10 +433,17 @@ class Trainer:
             classes = getattr(self.val_loader.dataset, 'classes', None)
             video_to_active_indices = getattr(self.val_loader.dataset, 'video_to_active_indices', None)
             
+            # Prepare Video IDs for optimization to align metric with validation
+            full_video_ids = np.repeat(all_video_ids, T)
+            flat_video_ids_opt = full_video_ids[valid_mask] if self.config['loss_type'] != 'new_focal' else full_video_ids
+            # Apply same stride as other tensors
+            flat_video_ids_opt = flat_video_ids_opt[::optimize_stride]
+            
             self.post_processor.optimize_thresholds(
                 flat_probs_opt, flat_targets_opt, flat_lab_ids_opt, 
                 classes=classes, 
-                video_to_active_indices=video_to_active_indices
+                video_to_active_indices=video_to_active_indices,
+                flat_video_ids=flat_video_ids_opt
             )
             
             del flat_probs_opt, flat_targets_opt, flat_lab_ids_opt

@@ -46,55 +46,104 @@ class PostProcessor:
             return pd.concat(results, ignore_index=True)
         return pd.DataFrame()
 
-    def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes, active_indices=None):
+    def _optimize_lab(self, lab, predictions, targets, lab_ids, threshold_range, num_classes, active_indices=None, video_ids=None):
         lab_mask = (lab_ids == lab)
         
-        max_samples = 1000000
-        num_lab_samples = np.sum(lab_mask)
-        
-        if num_lab_samples > max_samples:
-            lab_indices = np.where(lab_mask)[0]
-            sampled_indices = np.random.choice(lab_indices, max_samples, replace=False)
-            lab_preds = predictions[sampled_indices].astype(np.float32)
-            lab_targets = (targets[sampled_indices] > 0.5)
-        else:
-            lab_preds = predictions[lab_mask].astype(np.float32)
-            lab_targets = (targets[lab_mask] > 0.5)
-        
-        sigmas_per_class = np.std(lab_preds, axis=0)
-
-        # 决定哪些类别需要参与平均
+        # Determine effective indices for evaluation
+        # If active_indices provided, use them. Else use all classes present in targets.
+        lab_targets_full = (targets[lab_mask] > 0.5)
         if active_indices is not None:
             eval_indices = active_indices
         else:
-            # 回退：至少目标中出现过的类别
-            eval_indices = np.where(lab_targets.sum(axis=0) > 0)[0]
-        
-        best_thresh_per_class = np.full(num_classes, 0.5)
-        
+            eval_indices = np.where(lab_targets_full.sum(axis=0) > 0)[0]
+            
         if len(eval_indices) == 0:
-            return lab, best_thresh_per_class, sigmas_per_class, 0.0
+            return lab, np.full(num_classes, 0.5), np.std(predictions[lab_mask], axis=0), 0.0
 
-        f1_scores = np.zeros((num_classes, len(threshold_range)))
+        # --- Video-Aware Optimization (New) ---
+        if video_ids is not None:
+            lab_preds = predictions[lab_mask]
+            # lab_targets_full already verified
+            lab_vids = video_ids[lab_mask]
+            
+            # Map video IDs to contiguous integers for bincount
+            unique_vids, v_inv = np.unique(lab_vids, return_inverse=True)
+            num_vids = len(unique_vids)
+            
+            sigmas_per_class = np.std(lab_preds, axis=0)
+            f1_scores = np.zeros((num_classes, len(threshold_range)))
+            
+            # Iterate only over classes that matter to save time
+            for c_idx in eval_indices:
+                p_c = lab_preds[:, c_idx]
+                t_c = lab_targets_full[:, c_idx]
+                
+                # Check if this class actually appears in this lab segment?
+                # Optimization: if t_c.sum() == 0 and p_c.max() < min(thresholds), we can skip.
+                # But simple loop is robust.
+                
+                for t_i, th in enumerate(threshold_range):
+                    pb = (p_c > th)
+                    
+                    tp = (pb & t_c)
+                    fp = (pb & ~t_c)
+                    fn = (~pb & t_c)
+                    
+                    # Compute per-video counts using bincount
+                    # weights must be float for bincount usually? or it casts. 
+                    # tp is bool, casts to int/float.
+                    
+                    tv = np.bincount(v_inv, weights=tp, minlength=num_vids)
+                    fv = np.bincount(v_inv, weights=fp, minlength=num_vids)
+                    nv = np.bincount(v_inv, weights=fn, minlength=num_vids)
+                    
+                    # Compute F1 per video
+                    denom = 2*tv + fv + nv
+                    
+                    # Avoid division by zero
+                    # We compute F1 for all videos. 
+                    # If denom is 0 (no TP, no FP, no FN) -> usually means TN. F1 is undefined or 1?
+                    # In MABe logic: "f1_score(..., zero_division=0.0)"
+                    # BUT: sklearn f1 output 0 if both pred and true are empty?
+                    # Let's assume 0 for stability unless specified otherwise.
+                    
+                    video_f1s = np.divide(2*tv, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
+                    
+                    # Average over videos
+                    f1_scores[c_idx, t_i] = np.mean(video_f1s)
+                    
+        else:
+            # --- Legacy Global Optimization ---
+            max_samples = 1000000
+            num_lab_samples = np.sum(lab_mask)
+            
+            if num_lab_samples > max_samples:
+                lab_indices = np.where(lab_mask)[0]
+                sampled_indices = np.random.choice(lab_indices, max_samples, replace=False)
+                lab_preds = predictions[sampled_indices].astype(np.float32)
+                lab_targets = (targets[sampled_indices] > 0.5)
+            else:
+                lab_preds = predictions[lab_mask].astype(np.float32)
+                lab_targets = lab_targets_full
+            
+            sigmas_per_class = np.std(lab_preds, axis=0)
+            f1_scores = np.zeros((num_classes, len(threshold_range)))
+            
+            for i, th in enumerate(threshold_range):
+                preds_bool = lab_preds > th
+                tp = (preds_bool & lab_targets).sum(axis=0)
+                fp = (preds_bool & ~lab_targets).sum(axis=0)
+                fn = (~preds_bool & lab_targets).sum(axis=0)
+                denom = 2 * tp + fp + fn
+                f1_scores[:, i] = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
         
-        for i, th in enumerate(threshold_range):
-            preds_bool = lab_preds > th
-            
-            tp = (preds_bool & lab_targets).sum(axis=0)
-            fp = (preds_bool & ~lab_targets).sum(axis=0)
-            fn = (~preds_bool & lab_targets).sum(axis=0)
-            
-            denom = 2 * tp + fp + fn
-            f1_scores[:, i] = np.divide(2 * tp, denom, out=np.zeros_like(denom, dtype=float), where=denom!=0)
-            
-            del preds_bool
-        
+        # Select best thresholds based on calculated F1 scores
         best_indices = np.argmax(f1_scores, axis=1)
         best_scores = f1_scores[np.arange(num_classes), best_indices]
         
         optimized_thresholds = threshold_range[best_indices]
         
-        # 对于非激活类别，强制设为 0.5 以确保稳定性
+        # Reset non-active classes to 0.5
         non_active = np.ones(num_classes, dtype=bool)
         if active_indices is not None:
             non_active[active_indices] = False
@@ -102,12 +151,22 @@ class PostProcessor:
             non_active[eval_indices] = False
         optimized_thresholds[non_active] = 0.5
         
-        # 只返回参与评估类别的平均 F1
         mean_eval_f1 = np.mean(best_scores[eval_indices]) if len(eval_indices) > 0 else 0.0
         
         return lab, optimized_thresholds, sigmas_per_class, mean_eval_f1
 
-    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None, video_to_active_indices=None):
+    def optimize_thresholds(self, predictions, targets, lab_ids, classes=None, video_to_active_indices=None, flat_video_ids=None):
+        """
+        Optimizes thresholds for each class and laboratory.
+        
+        Args:
+            predictions: (N, C) Probability matrix
+            targets: (N, C) Binary target matrix
+            lab_ids: (N,) Laboratory IDs
+            classes: Optional list of class names
+            video_to_active_indices: Optional mapping from video_id to list of active class indices
+            flat_video_ids: (N,) Video IDs for vector-based mean-per-video optimization (Preferred)
+        """
         if classes is not None:
             self.classes = classes
             self.class_to_idx = {c: i for i, c in enumerate(classes)}
@@ -117,9 +176,8 @@ class PostProcessor:
         if video_to_active_indices:
             # Note: Threshold optimization is usually done per lab. 
             # We use the union of all behaviors ever labeled for any video in that lab.
-            lab_to_active_indices = {}
-            # We don't have flat_video_ids here yet to map labs to videos, 
-            # but we can try to infer or just pass the video mapping down.
+            # This is a bit complex without clear video->lab mapping, so we skip explicit active_map building
+            # for now and rely on data-driven active detection or just use all classes.
             pass
 
         strategy = self.config.get('threshold_strategy', 'dynamic')
@@ -166,7 +224,8 @@ class PostProcessor:
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(self._optimize_lab)(
                 lab, predictions, targets, lab_ids, threshold_range, num_classes, 
-                active_indices=lab_to_active_indices.get(lab) if lab_to_active_indices else None
+                active_indices=lab_to_active_indices.get(lab) if lab_to_active_indices else None,
+                video_ids=flat_video_ids
             )
             for lab in unique_labs
         )
@@ -177,7 +236,7 @@ class PostProcessor:
             self.sigmas[lab] = sigmas
             avg_best_f1s.append(best_f1)
         
-        print(f"Thresholds optimized for {len(unique_labs)} labs. Mean Best F1 (Internal): {np.mean(avg_best_f1s):.4f}")
+        print(f"Thresholds optimized for {len(unique_labs)} labs. Mean Best F1 (Target Metric): {np.mean(avg_best_f1s):.4f}")
         
         mean_prob = np.mean(predictions)
         max_prob = np.max(predictions)
