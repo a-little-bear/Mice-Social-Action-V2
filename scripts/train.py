@@ -256,30 +256,36 @@ def train():
         
         # Optimization: Read CSV quickly to get groups without loading parquet files
         import pandas as pd
+        from sklearn.model_selection import StratifiedGroupKFold
+        
         csv_path = os.path.join(config['data']['data_dir'], 'train.csv')
-        df_meta = pd.read_csv(csv_path, usecols=['video_id'])
-        all_videos = df_meta['video_id'].astype(str).unique()
+        df_meta = pd.read_csv(csv_path, usecols=['video_id', 'lab_id'])
         
-        print(f"Total unique videos found: {len(all_videos)}")
+        video_ids = df_meta['video_id'].values
+        lab_ids = df_meta['lab_id'].values
         
-        # Perform Group Shuffle Split (80/20)
-        # Random State is fixed by seed in config usually, but let's be explicit
-        splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=config['seed'])
+        print(f"Total entries found: {len(video_ids)}. Unique videos: {len(np.unique(video_ids))}")
         
-        # We need parallel arrays of indices and groups
-        # Actually GroupShuffleSplit splits indices based on groups not unique groups directly.
-        # So we construct dummy features just to use the splitter interface or just shuffle unique videos.
+        # Use StratifiedGroupKFold (n_splits=5) and take the first fold to get an 80/20 split
+        # that preserves the % of each Lab in both Train and Val
+        sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=config['seed'])
         
-        # Simpler approach: Shuffle unique videos directly
-        rng = np.random.RandomState(config['seed'])
-        shuffled_videos = all_videos.copy()
-        rng.shuffle(shuffled_videos)
+        train_idxs, val_idxs = next(sgkf.split(video_ids, lab_ids, groups=video_ids))
         
-        n_val = int(len(shuffled_videos) * 0.2)
-        val_videos = set(shuffled_videos[:n_val])
-        train_videos = set(shuffled_videos[n_val:])
+        train_videos = set(video_ids[train_idxs])
+        val_videos = set(video_ids[val_idxs])
         
-        print(f"Split Summary: Train Videos={len(train_videos)}, Val Videos={len(val_videos)}")
+        print(f"Stratified Split Summary:")
+        print(f"Train Videos: {len(train_videos)} | Val Videos: {len(val_videos)}")
+        print("Verifying Lab coverage in validation set...")
+        val_labs = set(lab_ids[val_idxs])
+        all_labs = set(lab_ids)
+        missing_labs = all_labs - val_labs
+        if missing_labs:
+            print(f"WARNING: The following labs are missing from validation Set: {missing_labs}")
+        else:
+            print("SUCCESS: All labs are represented in the Validation Set.")
+        
         print("Initializing Datasets with STRICT video whitelists...")
         
         # Re-initialize datasets with whitelists
