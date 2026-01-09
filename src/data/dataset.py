@@ -14,10 +14,11 @@ class MABeDataset(Dataset):
     _video_cache = {}
     _label_full_cache = {} # New: Compact global cache for full-video labels
 
-    def __init__(self, data_path, config, mode='train'):
+    def __init__(self, data_path, config, mode='train', video_whitelist=None):
         self.data_path = data_path
         self.config = config
         self.mode = mode
+        self.video_whitelist = set(video_whitelist) if video_whitelist is not None else None
         self.window_size = config['data'].get('window_size', 512)
         self.stride = self.window_size
         
@@ -98,6 +99,10 @@ class MABeDataset(Dataset):
             for idx, row in df.iterrows():
                 lab_id = row['lab_id']
                 video_id = str(row['video_id'])
+                
+                # Apply Video Whitelist Filtering (CRITICAL for Hold-out split)
+                if self.video_whitelist is not None and video_id not in self.video_whitelist:
+                    continue
                 
                 tracking_dir = 'train_tracking' if mode in ['train', 'val'] else 'test_tracking'
                 annotation_dir = 'train_annotation' if mode in ['train', 'val'] else 'test_annotation'

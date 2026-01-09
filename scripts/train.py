@@ -10,7 +10,7 @@ if torch.cuda.is_available():
 import gc
 import atexit
 import argparse
-from sklearn.model_selection import KFold, GroupKFold
+from sklearn.model_selection import KFold, GroupKFold, GroupShuffleSplit
 from torch.utils.data import DataLoader, SubsetRandomSampler
 
 def cleanup():
@@ -248,8 +248,47 @@ def train():
         print(f"Average F1: {np.mean(cv_scores):.4f} +/- {np.std(cv_scores):.4f}")
         
     else:
-        print("Starting Standard Training (Train/Val Split)...")
-        val_dataset = MABeDataset(config['data']['data_dir'], config, mode='val')
+        print("Starting Standard Training (Hold-out Validation)...")
+        # --- CRITICAL FIX: Implement True Hold-out Split by Video ---
+        # We need to know all available video_ids first.
+        # Since full_dataset loads everything initially, we can extract from its metadata or load CSV directly.
+        # But MABeDataset default init loads everything, we can re-use full_dataset temporarily or read CSV.
+        
+        # Optimization: Read CSV quickly to get groups without loading parquet files
+        import pandas as pd
+        csv_path = os.path.join(config['data']['data_dir'], 'train.csv')
+        df_meta = pd.read_csv(csv_path, usecols=['video_id'])
+        all_videos = df_meta['video_id'].astype(str).unique()
+        
+        print(f"Total unique videos found: {len(all_videos)}")
+        
+        # Perform Group Shuffle Split (80/20)
+        # Random State is fixed by seed in config usually, but let's be explicit
+        splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=config['seed'])
+        
+        # We need parallel arrays of indices and groups
+        # Actually GroupShuffleSplit splits indices based on groups not unique groups directly.
+        # So we construct dummy features just to use the splitter interface or just shuffle unique videos.
+        
+        # Simpler approach: Shuffle unique videos directly
+        rng = np.random.RandomState(config['seed'])
+        shuffled_videos = all_videos.copy()
+        rng.shuffle(shuffled_videos)
+        
+        n_val = int(len(shuffled_videos) * 0.2)
+        val_videos = set(shuffled_videos[:n_val])
+        train_videos = set(shuffled_videos[n_val:])
+        
+        print(f"Split Summary: Train Videos={len(train_videos)}, Val Videos={len(val_videos)}")
+        print("Initializing Datasets with STRICT video whitelists...")
+        
+        # Re-initialize datasets with whitelists
+        # Note: We discard the previous 'full_dataset' to save memory, as it contained everything
+        del full_dataset
+        gc.collect()
+        
+        train_dataset = MABeDataset(config['data']['data_dir'], config, mode='train', video_whitelist=train_videos)
+        val_dataset = MABeDataset(config['data']['data_dir'], config, mode='val', video_whitelist=val_videos)
         
         train_loader = None
         val_loader = None
@@ -267,7 +306,7 @@ def train():
                 loader_kwargs['persistent_workers'] = config['data'].get('persistent_workers', False)
 
             train_loader = DataLoader(
-                full_dataset, 
+                train_dataset, 
                 shuffle=True,
                 **loader_kwargs
             )
@@ -277,7 +316,12 @@ def train():
                 **loader_kwargs
             )
             
-            run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes, feature_generator=full_dataset.feature_generator)
+            # Note: We need to pass input_dim and num_classes correctly. 
+            # We can get them from train_dataset now.
+            input_dim = train_dataset.feature_generator.get_feature_dim(num_mice, num_keypoints)
+            num_classes = train_dataset.num_classes
+            
+            run_fold(config, train_loader, val_loader, device, None, input_dim, num_classes, feature_generator=train_dataset.feature_generator)
         
         except Exception as e:
             print(f"Error during training: {e}")
