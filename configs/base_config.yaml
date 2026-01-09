@@ -49,14 +49,14 @@ model:
   spatial_encoder:
     enabled: true
     type: "st_gcn" # Options: "spatialGNN" (MLP-like), "st_gcn" (Spatio-Temporal GCN), "gat" (Graph Attention)
-    use_adj: false # Whether to use adjacency matrix constraints
+    use_adj: true # Whether to use adjacency matrix constraints
     num_nodes: 7 # Number of keypoints/nodes after unification (set based on dataset)
     hidden_dim: 128
     num_layers: 4
     dropout: 0.1
     
   temporal_backbone:
-    type: "squeezeformer" # Options: "squeezeformer" (Attention+Conv), "wavenet" (Dilated Conv), "transformer", "multi_scale_cnn"
+    type: "wavenet" # Options: "squeezeformer" (Attention+Conv), "wavenet" (Dilated Conv), "transformer", "multi_scale_cnn"
     input_dim: 0
     hidden_dim: 512
     num_layers: 8
