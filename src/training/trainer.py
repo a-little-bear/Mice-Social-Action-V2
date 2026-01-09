@@ -498,24 +498,22 @@ class Trainer:
             final_bin_preds = self.post_processor.apply_tie_breaking(flat_probs_view, flat_lab_ids)
             
             # Ensure final_bin_preds is proper type for bitwise operations
-            if final_bin_preds.dtype != np.uint8 and final_bin_preds.dtype != bool:
-                final_bin_preds = final_bin_preds.astype(np.uint8)
+            # Force both to boolean for safe logical AND
+            final_bin_preds_bool = final_bin_preds.astype(bool)
 
             # --- F1 after Tie-Breaking (before final gap filling if any) ---
             print("[Intermediate] Calculating F1 after Tie-Breaking...")
             if v_id_to_mask is not None and v_id_to_int is not None:
                 # Apply mask to tie-broken preds
                 # flat_masks is already computed above
-                # Ensure final_bin_preds is uint8/bool matching flat_masks (which is boolean)
-                # If flat_masks is bool, final_bin_preds (uint8) & flat_masks (bool) MIGHT fail in some numpy versions or if shape differs slightly implicitly
-                # Casting flat_masks to uint8 (0/1) makes it safe for bitwise ops with another uint8
-                flat_masks_uint8 = flat_masks.astype(np.uint8) if flat_masks.dtype == bool else flat_masks
                 
                 # Check shapes just in case (broadcasting)
-                if flat_masks_uint8.ndim == 1 and final_bin_preds.ndim == 2:
-                    flat_masks_uint8 = flat_masks_uint8[:, None] # expand to (N, 1) to broadcast to (N, C)
+                # Ensure mask is also bool
+                flat_masks_bool = flat_masks.astype(bool)
+                if flat_masks_bool.ndim == 1 and final_bin_preds_bool.ndim == 2:
+                    flat_masks_bool = flat_masks_bool[:, None] # expand to (N, 1) to broadcast to (N, C)
 
-                tb_preds_masked = final_bin_preds & flat_masks_uint8
+                tb_preds_masked = final_bin_preds_bool & flat_masks_bool
                 
                 tb_lab_scores = []
                 for lab in unique_labs:
