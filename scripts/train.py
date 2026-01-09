@@ -272,8 +272,9 @@ def train():
         
         train_idxs, val_idxs = next(sgkf.split(video_ids, lab_ids, groups=video_ids))
         
-        train_videos = set(video_ids[train_idxs])
-        val_videos = set(video_ids[val_idxs])
+        # Convert to strings because MABeDataset converts row['video_id'] to string
+        train_videos = set(str(v) for v in video_ids[train_idxs])
+        val_videos = set(str(v) for v in video_ids[val_idxs])
         
         print(f"Stratified Split Summary:")
         print(f"Train Videos: {len(train_videos)} | Val Videos: {len(val_videos)}")
