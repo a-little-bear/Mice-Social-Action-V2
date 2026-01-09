@@ -38,6 +38,11 @@ class HHSTFModel(nn.Module):
                     self.adj = adj # Directly assign to registered buffer
             
         temporal_config = config['temporal_backbone'].copy()
+        
+        # Determine if we should skip temporal backbone (e.g. for ST-GCN that has internal temporal layers)
+        self.skip_temporal = config['spatial_encoder']['enabled'] and \
+                             config['spatial_encoder'].get('type') == 'st_gcn'
+
         if self.spatial_encoder:
             temporal_config['input_dim'] = config['spatial_encoder']['hidden_dim']
         elif self.feature_generator:
@@ -46,9 +51,13 @@ class HHSTFModel(nn.Module):
             num_nodes_per_mouse = spatial_config.get('num_nodes', 7)
             temporal_config['input_dim'] = self.feature_generator.get_feature_dim(num_mice, num_nodes_per_mouse)
 
-        self.temporal_encoder = TemporalEncoder(
-            config=temporal_config
-        )
+        if not self.skip_temporal:
+            self.temporal_encoder = TemporalEncoder(
+                config=temporal_config
+            )
+        else:
+            self.temporal_encoder = None
+            print("ST-GCN detected: Skipping separate Temporal Backbone.")
         
         self.context_adapter = None
         if config['context_adapter']['enabled']:
@@ -56,7 +65,12 @@ class HHSTFModel(nn.Module):
                 config=config['context_adapter']
             )
             
-        temporal_dim = config['temporal_backbone']['hidden_dim']
+        # If skipping temporal, use spatial hidden dim as the fusion input source
+        if self.skip_temporal:
+            temporal_dim = config['spatial_encoder']['hidden_dim']
+        else:
+            temporal_dim = config['temporal_backbone']['hidden_dim']
+            
         fusion_type = config['fusion'].get('type', 'concat')
         fusion_hidden_dim = config['fusion'].get('hidden_dim', 1024)
         fusion_dropout = config['fusion'].get('dropout', 0.1)
@@ -122,7 +136,10 @@ class HHSTFModel(nn.Module):
             current_adj = self.adj if self.adj.numel() > 1 else None
             x = self.spatial_encoder(x, adj=current_adj)
             
-        features = self.temporal_encoder(x)
+        if not self.skip_temporal:
+            features = self.temporal_encoder(x)
+        else:
+            features = x # ST-GCN output is directly used as temporal features
         
         if self.context_adapter and lab_ids is not None:
             # Check config to decide whether to pass subject_ids

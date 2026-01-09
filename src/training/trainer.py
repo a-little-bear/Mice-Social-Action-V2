@@ -497,6 +497,10 @@ class Trainer:
 
             final_bin_preds = self.post_processor.apply_tie_breaking(flat_probs_view, flat_lab_ids)
             
+            # Ensure final_bin_preds is proper type for bitwise operations
+            if final_bin_preds.dtype != np.uint8 and final_bin_preds.dtype != bool:
+                final_bin_preds = final_bin_preds.astype(np.uint8)
+
             # --- F1 after Tie-Breaking (before final gap filling if any) ---
             print("[Intermediate] Calculating F1 after Tie-Breaking...")
             if v_id_to_mask is not None and v_id_to_int is not None:
