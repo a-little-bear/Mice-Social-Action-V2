@@ -502,7 +502,16 @@ class Trainer:
             if v_id_to_mask is not None and v_id_to_int is not None:
                 # Apply mask to tie-broken preds
                 # flat_masks is already computed above
-                tb_preds_masked = final_bin_preds & flat_masks
+                # Ensure final_bin_preds is uint8/bool matching flat_masks (which is boolean)
+                # If flat_masks is bool, final_bin_preds (uint8) & flat_masks (bool) MIGHT fail in some numpy versions or if shape differs slightly implicitly
+                # Casting flat_masks to uint8 (0/1) makes it safe for bitwise ops with another uint8
+                flat_masks_uint8 = flat_masks.astype(np.uint8) if flat_masks.dtype == bool else flat_masks
+                
+                # Check shapes just in case (broadcasting)
+                if flat_masks_uint8.ndim == 1 and final_bin_preds.ndim == 2:
+                    flat_masks_uint8 = flat_masks_uint8[:, None] # expand to (N, 1) to broadcast to (N, C)
+
+                tb_preds_masked = final_bin_preds & flat_masks_uint8
                 
                 tb_lab_scores = []
                 for lab in unique_labs:
