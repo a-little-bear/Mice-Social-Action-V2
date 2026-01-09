@@ -155,7 +155,13 @@ class PostProcessor:
         num_classes = predictions.shape[1]
         
         # Use a finer search step (0.01) for professional-grade optimization
-        threshold_range = np.arange(0.1, 0.95, 0.01)
+        # Allow customization from config, default to 0.01 - 0.95
+        range_cfg = self.config.get('threshold_range', {})
+        start = range_cfg.get('start', 0.01)
+        end = range_cfg.get('end', 0.95)
+        step = range_cfg.get('step', 0.01)
+        threshold_range = np.arange(start, end, step)
+        print(f"Using threshold range: [{start}, {end}) with step {step}")
         
         results = Parallel(n_jobs=self.n_jobs)(
             delayed(self._optimize_lab)(
